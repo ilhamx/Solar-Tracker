@@ -1,6 +1,16 @@
 /*********** BLYNK ***********/
 
 #include <Arduino.h>
+
+#include <MPU6050.h>
+MPU6050 mpu;
+
+float yaw0 = 0;
+float currentYaw = 0;
+
+#define YAW_LIMIT 160   // max rotation from start (degrees)
+
+
 // #define BLYNK_TEMPLATE_ID "TMPLxxxx"
 // #define BLYNK_TEMPLATE_NAME "Solar Tracker"
 // #define BLYNK_AUTH_TOKEN "YOUR_AUTH_TOKEN"
@@ -49,27 +59,36 @@ Servo servoTilt;
 float panAngle  = 90;
 float tiltAngle = 90;
 
-#define PAN_MIN   10
-#define PAN_MAX  170
-#define TILT_MIN  20
-#define TILT_MAX 120
+#define PAN_MIN   50
+#define PAN_MAX  140
+#define TILT_MIN  55
+#define TILT_MAX 125
 
 /*********** TRACKER PARAM ***********/
-float Kp = 0.5;
+float Kp_X = 5.0;
+float Kp_Y = 1.0;
 float deadzone = 0.02;
 unsigned long lastUpdate = 0;
 
 void myTimerEvent()
 {
   /*********** READ SENSORS ***********/
+  // Serial.println("reading sensor");
   float L1 = bh1.readLightLevel(); // top-left
-  float L2 = bh2.readLightLevel(); // top-right
-  float L3 = bh3.readLightLevel(); // bottom-left
+  float L3 = bh2.readLightLevel(); // top-right
+  float L2 = bh3.readLightLevel(); // bottom-left
   float L4 = bh4.readLightLevel(); // bottom-right
 
   float sum = L1 + L2 + L3 + L4 + 0.001;
 
-  if (sum < 200) return; // night protection
+  if (sum < 50) // night protection
+  {
+    panAngle = 90;
+    tiltAngle = 90;
+    servoPan.write(panAngle);
+    servoTilt.write(tiltAngle);
+    return;
+  }
 
   /*********** FUSION ***********/
   float errX = (L2 + L4) - (L1 + L3);
@@ -82,16 +101,17 @@ void myTimerEvent()
   if (abs(ny) < deadzone) ny = 0;
 
   /*********** CONTROL ***********/
-  panAngle  += nx * Kp;
-  tiltAngle += ny * Kp;
+  panAngle  += nx * Kp_X; // multiplied by 10 to increase sensitivity
+  tiltAngle += ny * Kp_Y;
 
   panAngle  = constrain(panAngle,  PAN_MIN,  PAN_MAX);
   tiltAngle = constrain(tiltAngle, TILT_MIN, TILT_MAX);
 
   servoPan.write(panAngle); // offset for calibration
-  servoTilt.write(tiltAngle + 10);
+  servoTilt.write(tiltAngle);
 
   /*********** OLED ***********/
+  // Serial.println("writing to lcd");
   display.clearDisplay();
   display.setCursor(0,0);
   display.printf("Lux: %.0f\n", sum);
@@ -102,16 +122,15 @@ void myTimerEvent()
   display.display();
 
   /*********** BLYNK ***********/
-  Blynk.virtualWrite(V0, sum);
-  Blynk.virtualWrite(V1, nx);
-  Blynk.virtualWrite(V2, ny);
-  Blynk.virtualWrite(V3, panAngle);
-  Blynk.virtualWrite(V4, tiltAngle);
+  // Serial.println("sending data to blynk.");
+  // Blynk.virtualWrite(V0, sum);
+  // Blynk.virtualWrite(V1, nx);
+  // Blynk.virtualWrite(V2, ny);
+  // Blynk.virtualWrite(V3, panAngle);
+  // Blynk.virtualWrite(V4, tiltAngle);
 
-  Serial.printf("Lux %.0f | nx %.3f ny %.3f | Pan %.1f Tilt %.1f\n",
-                sum, nx, ny, panAngle, tiltAngle);
-  BLYNK_LOG("Lux %.0f | nx %.3f ny %.3f | Pan %.1f Tilt %.1f",
-           sum, nx, ny, panAngle, tiltAngle);
+  BLYNK_LOG("L1Lux %.0f | L2Lux %.0f | L3Lux %.0f | L4Lux %.0f | Sum %.0f | nx %.3f ny %.3f | Pan %.1f Tilt %.1f", L1, L2, L3, L4, sum, nx, ny, panAngle, tiltAngle);
+
 }
 
 void setup() {
@@ -131,7 +150,7 @@ void setup() {
 
   /*********** OLED ***********/
   Serial.println("Initializing OLED display...");
-  display.begin(SSD1306_SWITCHCAPVCC, 0x68, true); // address 0x68, reset pin not used
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C, true); // address 0x3C, reset pin not used
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -149,12 +168,14 @@ void setup() {
   /*********** BLYNK ***********/
   Serial.println("Connecting to WiFi...");
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
-  timer.setInterval(1000L, myTimerEvent);
+  timer.setInterval(200L, myTimerEvent);
+  // timer.setInterval(1000L, check);
 
 }
 
 void loop() {
   Blynk.run();
+  timer.run();
 
   // if (millis() - lastUpdate < 500) return; // 2 Hz
   // lastUpdate = millis();
