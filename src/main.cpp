@@ -1,17 +1,18 @@
 /*********** BLYNK ***********/
 
 #include <Arduino.h>
-#define Wire I2CBus1
+#include <INA3221.h>
 
-// #define BLYNK_TEMPLATE_ID "TMPLxxxx"
-// #define BLYNK_TEMPLATE_NAME "Solar Tracker"
-// #define BLYNK_AUTH_TOKEN "YOUR_AUTH_TOKEN"
+INA3221 ina(0x40);
 
-#define BLYNK_TEMPLATE_ID "TMPL6JETrKguB"
-#define BLYNK_TEMPLATE_NAME "Percobaan IoT"
-#define BLYNK_AUTH_TOKEN "4AIRXorIi0sIywRlka-ZszcuIWZoyMKC"
+// Blynk setup
+#define BLYNK_TEMPLATE_ID "TMPL6eR1bVog2"
+#define BLYNK_TEMPLATE_NAME "Solar Tracker"
+#define BLYNK_AUTH_TOKEN "XOPuG9s9pjBzVcIWq-BsI5d6jrSCh5Cq"
+
 #define BLYNK_PRINT Serial
 
+#define Wire I2CBus1
 #include <WiFi.h>
 #include <BlynkSimpleEsp32.h>
 
@@ -57,6 +58,11 @@ float tiltAngle = 90;
 #define PAN_MAX 140
 #define TILT_MIN 55
 #define TILT_MAX 125
+
+// global variables for ina3221
+float shuntV0, busV0, current0;
+float shuntV1, busV1, current1;
+float shuntV2, busV2, current2;
 
 /*********** TRACKER PARAM ***********/
 float Kp_X = 2.0;
@@ -138,10 +144,49 @@ void myTimerEvent()
   // Blynk.virtualWrite(V2, ny);
   // Blynk.virtualWrite(V3, panAngle);
   // Blynk.virtualWrite(V4, tiltAngle);
-
   BLYNK_LOG("L1Lux %.0f | L2Lux %.0f | L3Lux %.0f | L4Lux %.0f | Sum %.0f | nx %.3f ny %.3f | Pan %.1f Tilt %.1f | Yaw %.1f", L1, L2, L3, L4, sum, nx, ny, panAngle, tiltAngle, currentYaw);
 }
 
+void readINA()
+{
+  shuntV0 = ina.getShuntVoltage(0);
+  busV0 = ina.getBusVoltage(0);
+  current0 = ina.getCurrent(0);
+
+  shuntV1 = ina.getShuntVoltage(1);
+  busV1 = ina.getBusVoltage(1);
+  current1 = ina.getCurrent(1);
+
+  shuntV2 = ina.getShuntVoltage(2);
+  busV2 = ina.getBusVoltage(2);
+  current2 = ina.getCurrent(2);
+
+  if (isnan(shuntV0) || isnan(busV0) || isnan(current0) ||
+      isnan(shuntV1) || isnan(busV1) || isnan(current1) ||
+      isnan(shuntV2) || isnan(busV2) || isnan(current2))
+  {
+    BLYNK_LOG("Failed to read INA3221");
+    return;
+  }
+  else
+  {
+    BLYNK_LOG("CH1: Shunt %.3f mV | Bus %.3f V | Current %.3f mA", shuntV0, busV0, current0);
+    BLYNK_LOG("CH2: Shunt %.3f mV | Bus %.3f V | Current %.3f mA", shuntV1, busV1, current1);
+    BLYNK_LOG("CH3: Shunt %.3f mV | Bus %.3f V | Current %.3f mA", shuntV2, busV2, current2);
+  }
+}
+
+void sendBlynk()
+{
+  Blynk.virtualWrite(V0, panAngle);
+  Blynk.virtualWrite(V1, tiltAngle);
+  Blynk.virtualWrite(V2, busV0);
+  Blynk.virtualWrite(V3, current0);
+  Blynk.virtualWrite(V4, busV1);
+  Blynk.virtualWrite(V5, current1);
+  Blynk.virtualWrite(V6, busV2);
+  Blynk.virtualWrite(V7, current2);
+}
 
 void setup()
 {
@@ -165,6 +210,15 @@ void setup()
   servoTilt.attach(TILT_PIN);
   servoPan.write(panAngle);
   servoTilt.write(tiltAngle);
+
+  // Ina3221
+  Serial.println("Initializing INA3221...");
+  ina.begin(&I2CBus1);
+  ina.setMode(0x7127); // default mode: all channels enabled, 4 averages, 1.1ms conversion time
+
+  ina.setShuntR(0, 0.1); // CH1 0.1 ohm (ubah sesuai hardware)
+  ina.setShuntR(1, 0.1); // CH2
+  ina.setShuntR(2, 0.1); // CH3
 
   /*********** MPU6050 ***********/
   Serial.println("Initializing MPU6050...");
@@ -190,6 +244,8 @@ void setup()
   Serial.println("Connecting to WiFi...");
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
   timer.setInterval(200L, myTimerEvent);
+  timer.setInterval(1000L, readINA);   // read INA3221 every 200 ms
+  timer.setInterval(3000L, sendBlynk); // send data to Blynk every 3 second (adjust as needed)
   // timer.setInterval(1000L, check);
 }
 
