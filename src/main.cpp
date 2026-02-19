@@ -12,7 +12,7 @@ INA3221 ina(0x40);
 
 #define BLYNK_PRINT Serial
 
-#define Wire I2CBus1
+// #define Wire I2CBus1
 #include <WiFi.h>
 #include <BlynkSimpleEsp32.h>
 
@@ -23,7 +23,7 @@ BlynkTimer timer; // Create a timer object to handle timed events
 
 /*********** I2C ***********/
 #include <Wire.h>
-TwoWire I2CBus1 = TwoWire(0); // default
+// TwoWire I2CBus1 = TwoWire(0); // default
 TwoWire I2CBus2 = TwoWire(1); // second bus
 
 /*********** MPU6050 ***********/
@@ -54,8 +54,8 @@ Servo servoTilt;
 float panAngle = 90;
 float tiltAngle = 90;
 
-#define PAN_MIN 50
-#define PAN_MAX 140
+#define PAN_MIN 70
+#define PAN_MAX 110
 #define TILT_MIN 55
 #define TILT_MAX 125
 
@@ -93,7 +93,7 @@ void myTimerEvent()
 
   float sum = L1 + L2 + L3 + L4 + 0.001;
 
-  if (sum < 50) // night protection
+  if (sum < 200) // night protection
   {
     panAngle = 90;
     tiltAngle = 90;
@@ -176,8 +176,15 @@ void readINA()
   }
 }
 
-void sendBlynk()
+void sendBlynk() // send INA3221 data to Blynk every 3 seconds
 {
+  if (isnan(busV0) || isnan(current0) ||
+      isnan(busV1) || isnan(current1) ||
+      isnan(busV2) || isnan(current2))
+  {
+    BLYNK_LOG("Cannot send INA3221 data to Blynk due to NaN values");
+    return;
+  }
   Blynk.virtualWrite(V0, panAngle);
   Blynk.virtualWrite(V1, tiltAngle);
   Blynk.virtualWrite(V2, busV0);
@@ -194,13 +201,13 @@ void setup()
 
   /*********** INIT I2C ***********/
   Serial.println("Initializing I2C buses...");
-  I2CBus1.begin(21, 22, 400000); // SDA, SCL
+  Wire.begin(21, 22, 400000); // SDA, SCL
   I2CBus2.begin(16, 17, 400000);
 
   /*********** INIT BH1750 ***********/
   Serial.println("Initializing BH1750 sensors...");
-  bh1.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &I2CBus1);
-  bh2.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &I2CBus1);
+  bh1.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire);
+  bh2.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire);
   bh3.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &I2CBus2);
   bh4.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &I2CBus2);
 
@@ -213,7 +220,7 @@ void setup()
 
   // Ina3221
   Serial.println("Initializing INA3221...");
-  ina.begin(&I2CBus1);
+  ina.begin();
   ina.setMode(0x7127); // default mode: all channels enabled, 4 averages, 1.1ms conversion time
 
   ina.setShuntR(0, 0.1); // CH1 0.1 ohm (ubah sesuai hardware)
@@ -243,7 +250,7 @@ void setup()
   /*********** BLYNK ***********/
   Serial.println("Connecting to WiFi...");
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
-  timer.setInterval(200L, myTimerEvent);
+  timer.setInterval(500L, myTimerEvent);
   timer.setInterval(1000L, readINA);   // read INA3221 every 200 ms
   timer.setInterval(3000L, sendBlynk); // send data to Blynk every 3 second (adjust as needed)
   // timer.setInterval(1000L, check);
