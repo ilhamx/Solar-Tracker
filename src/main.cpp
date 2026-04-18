@@ -32,6 +32,9 @@ MPU6050 mpu;
 
 float yaw0 = 0;
 float currentYaw = 0;
+float L1, L2, L3, L4;                             // light levels from 4 sensors
+float L1_kalman, L2_kalman, L3_kalman, L4_kalman; // kalman-filtered light levels
+float sum, nx, ny;                                // for fusion calculations
 
 #define YAW_LIMIT 160 // max rotation from start (degrees)
 
@@ -65,35 +68,63 @@ float shuntV1, busV1, current1;
 float shuntV2, busV2, current2;
 
 /*********** TRACKER PARAM ***********/
-float Kp_X = 2.0;
-float Kp_Y = 1.0;
+float Kp_X = 2.0; // pan is more sensitive to error, so we use a larger Kp
+float Kp_Y = 3.0; // tilt is less sensitive to error, so we use a smaller Kp
 float deadzone = 0.02;
 unsigned long lastUpdate = 0;
 
-float getYaw()
+// float getYaw()
+// {
+//   static float angle = 0;
+//   int16_t gx, gy, gz;
+//   mpu.getRotation(&gx, &gy, &gz);
+
+//   float gz_dps = gz / 131.0; // convert to deg/s
+//   angle += gz_dps * 0.5;     // 0.5 sec loop time
+
+//   return angle;
+// }
+
+float kalmanUpdate(float measurement)
 {
-  static float angle = 0;
-  int16_t gx, gy, gz;
-  mpu.getRotation(&gx, &gy, &gz);
 
-  float gz_dps = gz / 131.0; // convert to deg/s
-  angle += gz_dps * 0.5;     // 0.5 sec loop time
+  float x = 0;    // estimate
+  float P = 1;    // estimation error
+  float Q = 0.01; // process noise
+  float R = 1;    // measurement noise
 
-  return angle;
+  // Predict
+  P = P + Q;
+
+  // Kalman Gain
+  float K = P / (P + R);
+
+  // Update estimate
+  x = x + K * (measurement - x);
+
+  // Update error covariance
+  P = (1 - K) * P;
+
+  return x;
 }
 
-void myTimerEvent()
+void updateSens()
 {
   /*********** READ SENSORS ***********/
   // Serial.println("reading sensor");
-  float L1 = bh1.readLightLevel(); // top-left
-  float L3 = bh2.readLightLevel(); // top-right
-  float L2 = bh3.readLightLevel(); // bottom-left
-  float L4 = bh4.readLightLevel(); // bottom-right
+  L1 = bh1.readLightLevel(); // top-left
+  L3 = bh2.readLightLevel(); // top-right
+  L2 = bh3.readLightLevel(); // bottom-left
+  L4 = bh4.readLightLevel(); // bottom-right
 
-  float sum = L1 + L2 + L3 + L4 + 0.001;
+  L1_kalman = kalmanUpdate(L1); // example of using Kalman filter on one sensor (can be applied to all);
+  L2_kalman = kalmanUpdate(L2); // example of using Kalman filter on one sensor (can be applied to all);
+  L3_kalman = kalmanUpdate(L3); // example of using Kalman filter on one sensor (can be applied to all);
+  L4_kalman = kalmanUpdate(L4); // example of using Kalman filter on one sensor (can be applied to all);
 
-  if (sum < 200) // night protection
+  sum = L1 + L2 + L3 + L4 + 0.001;
+
+  if (sum < 100) // night protection
   {
     panAngle = 90;
     tiltAngle = 90;
@@ -102,12 +133,15 @@ void myTimerEvent()
     return;
   }
 
-  /*********** FUSION ***********/
-  float errX = (L2 + L4) - (L1 + L3);
-  float errY = (L1 + L2) - (L3 + L4);
+  /*********** FUSION **********
+   * Calculate normalized error in X and Y directions based on light levels
+   * The idea is to find the imbalance in light intensity across the sensors
+   */
+  float errX = (L1 + L2) - (L3 + L4);
+  float errY = (L1 + L3) - (L2 + L4);
 
-  float nx = errX / sum;
-  float ny = errY / sum;
+  nx = -errX / sum;
+  ny = errY / sum;
 
   if (abs(nx) < deadzone)
     nx = 0;
@@ -118,7 +152,7 @@ void myTimerEvent()
   panAngle += nx * Kp_X; // multiplied by 10 to increase sensitivity
   tiltAngle += ny * Kp_Y;
 
-  currentYaw = getYaw();
+  // currentYaw = getYaw();
 
   float deltaYaw = currentYaw - yaw0;
 
@@ -134,9 +168,6 @@ void myTimerEvent()
   panAngle = constrain(panAngle, PAN_MIN, PAN_MAX);
   tiltAngle = constrain(tiltAngle, TILT_MIN, TILT_MAX);
 
-  servoPan.write(panAngle);
-  servoTilt.write(tiltAngle);
-
   /*********** BLYNK ***********/
   // Serial.println("sending data to blynk.");
   // Blynk.virtualWrite(V0, sum);
@@ -144,18 +175,23 @@ void myTimerEvent()
   // Blynk.virtualWrite(V2, ny);
   // Blynk.virtualWrite(V3, panAngle);
   // Blynk.virtualWrite(V4, tiltAngle);
-  BLYNK_LOG("L1Lux %.0f | L2Lux %.0f | L3Lux %.0f | L4Lux %.0f | Sum %.0f | nx %.3f ny %.3f | Pan %.1f Tilt %.1f | Yaw %.1f", L1, L2, L3, L4, sum, nx, ny, panAngle, tiltAngle, currentYaw);
+}
+
+void updateServo()
+{
+  servoPan.write(panAngle);
+  servoTilt.write(tiltAngle);
 }
 
 void readINA()
 {
   shuntV0 = ina.getShuntVoltage(0);
   busV0 = ina.getBusVoltage(0);
-  current0 = ina.getCurrent(0);
+  current0 = -ina.getCurrent(0);
 
   shuntV1 = ina.getShuntVoltage(1);
   busV1 = ina.getBusVoltage(1);
-  current1 = ina.getCurrent(1);
+  current1 = -ina.getCurrent(1);
 
   shuntV2 = ina.getShuntVoltage(2);
   busV2 = ina.getBusVoltage(2);
@@ -170,9 +206,7 @@ void readINA()
   }
   else
   {
-    BLYNK_LOG("CH1: Shunt %.3f mV | Bus %.3f V | Current %.3f mA", shuntV0, busV0, current0);
-    BLYNK_LOG("CH2: Shunt %.3f mV | Bus %.3f V | Current %.3f mA", shuntV1, busV1, current1);
-    BLYNK_LOG("CH3: Shunt %.3f mV | Bus %.3f V | Current %.3f mA", shuntV2, busV2, current2);
+    // BLYNK_LOG("Light Levels: L1=%.0f, L2=%.0f, L3=%.0f, L4=%.0f", L1, L2, L3, L4);
   }
 }
 
@@ -187,12 +221,44 @@ void sendBlynk() // send INA3221 data to Blynk every 3 seconds
   }
   Blynk.virtualWrite(V0, panAngle);
   Blynk.virtualWrite(V1, tiltAngle);
-  Blynk.virtualWrite(V2, busV0);
-  Blynk.virtualWrite(V3, current0);
-  Blynk.virtualWrite(V4, busV1);
-  Blynk.virtualWrite(V5, current1);
-  Blynk.virtualWrite(V6, busV2);
-  Blynk.virtualWrite(V7, current2);
+  Blynk.virtualWrite(V2, current0);
+  Blynk.virtualWrite(V3, busV0);
+  Blynk.virtualWrite(V4, current1);
+  Blynk.virtualWrite(V5, busV1);
+  Blynk.virtualWrite(V6, current2);
+  Blynk.virtualWrite(V7, busV2);
+}
+
+void TaskBlynk(void *pvParameters)
+{
+  for (;;)
+  {
+
+    Blynk.run();
+    timer.run();
+
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+  }
+}
+
+void TaskUpdateSensors(void *pvParameters)
+{
+  for (;;)
+  {
+    // debugRawRFID();
+    updateSens();
+
+    // BLYNK_LOG("CH1: Shunt %.3f mV | Bus %.3f V | Current %.3f A", shuntV0, busV0, current0);
+    // BLYNK_LOG("CH2: Shunt %.3f mV | Bus %.3f V | Current %.3f A", shuntV1, busV1, current1);
+    // BLYNK_LOG("CH3: Shunt %.3f mV | Bus %.3f V | Current %.3f A", shuntV2, busV2, current2);
+
+    // BLYNK_LOG("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f | nx=%.3f ny=%.3f | Pan=%.1f Tilt=%.1f | Yaw=%.1f", L1_kalman, L2_kalman, L3_kalman, L4_kalman, sum, nx, ny, panAngle, tiltAngle, currentYaw);
+
+    Serial.printf("L1:%.0f L2:%.0f L3:%.0f L4:%.0f ", L1, L2, L3, L4);                                                                  // for plotting kalman effect in serial plotter
+    Serial.printf("L1_filtered:%.0f L2_filtered:%.0f L3_filtered:%.0f L4_filtered:%.0f\n", L1_kalman, L2_kalman, L3_kalman, L4_kalman); // for plotting kalman effect in serial plotter
+
+    vTaskDelay(125 / portTICK_PERIOD_MS);
+  }
 }
 
 void setup()
@@ -201,8 +267,8 @@ void setup()
 
   /*********** INIT I2C ***********/
   Serial.println("Initializing I2C buses...");
-  Wire.begin(21, 22, 400000); // SDA, SCL
-  I2CBus2.begin(16, 17, 400000);
+  Wire.begin(); // SDA, SCL
+  I2CBus2.begin(19, 18, 400000);
 
   /*********** INIT BH1750 ***********/
   Serial.println("Initializing BH1750 sensors...");
@@ -221,26 +287,27 @@ void setup()
   // Ina3221
   Serial.println("Initializing INA3221...");
   ina.begin();
+  ina.setAverage(128); // 128 samples for better stability (adjust as needed)
   ina.setMode(0x7127); // default mode: all channels enabled, 4 averages, 1.1ms conversion time
 
   ina.setShuntR(0, 0.1); // CH1 0.1 ohm (ubah sesuai hardware)
   ina.setShuntR(1, 0.1); // CH2
   ina.setShuntR(2, 0.1); // CH3
 
-  /*********** MPU6050 ***********/
-  Serial.println("Initializing MPU6050...");
-  delay(100);
-  mpu.initialize();
-  if (!mpu.testConnection())
-  {
-    Serial.println("MPU6050 NOT CONNECTED!");
-    while (1)
-      ;
-  }
-  else
-  {
-    Serial.println("MPU6050 Connected");
-  }
+  // /*********** MPU6050 ***********/
+  // Serial.println("Initializing MPU6050...");
+  // delay(100);
+  // mpu.initialize();
+  // if (!mpu.testConnection())
+  // {
+  //   Serial.println("MPU6050 NOT CONNECTED!");
+  //   // while (1)
+  //   //   ;
+  // }
+  // else
+  // {
+  //   Serial.println("MPU6050 Connected");
+  // }
 
   delay(1000);
 
@@ -250,17 +317,27 @@ void setup()
   /*********** BLYNK ***********/
   Serial.println("Connecting to WiFi...");
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
-  timer.setInterval(500L, myTimerEvent);
-  timer.setInterval(1000L, readINA);   // read INA3221 every 200 ms
-  timer.setInterval(3000L, sendBlynk); // send data to Blynk every 3 second (adjust as needed)
+  // timer.setInterval(20L, updateSens);  // read sensors and update control every 300 ms (adjust as needed)
+  timer.setInterval(1000L, readINA);    // read INA3221 every 200 ms
+  timer.setInterval(60000L, sendBlynk); // send data to Blynk every 3 second (adjust as needed)
+  timer.setInterval(100L, updateServo); // update servo positions every 100 ms (adjust as needed)
+  // timer.setInterval(100L, []()
+  //                   {
+  //                     // BLYNK_LOG("CH1: Shunt %.3f mV | Bus %.3f V | Current %.3f A", shuntV0, busV0, current0);
+  //                     // BLYNK_LOG("CH2: Shunt %.3f mV | Bus %.3f V | Current %.3f A", shuntV1, busV1, current1);
+  //                     // BLYNK_LOG("CH3: Shunt %.3f mV | Bus %.3f V | Current %.3f A", shuntV2, busV2, current2);
+
+  //                     // BLYNK_LOG("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f | nx=%.3f ny=%.3f | Pan=%.1f Tilt=%.1f | Yaw=%.1f", L1, L2, L3, L4, sum, nx, ny, panAngle, tiltAngle, currentYaw);
+  //                     Serial.printf("L1:%.0f L2:%.0f L3:%.0f L4:%.0f ", L1, L2, L3, L4);                                                                  // for plotting kalman effect in serial plotter
+  //                     Serial.printf("L1_filtered:%.0f L2_filtered:%.0f L3_filtered:%.0f L4_filtered:%.0f\n", L1_kalman, L2_kalman, L3_kalman, L4_kalman); // for plotting kalman effect in serial plotter
+  //                   });                                                                                                                                   // log light levels every 1 second for debugging
+
+  xTaskCreatePinnedToCore(TaskBlynk, "blynk", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(TaskUpdateSensors, "sensors", 4096, NULL, 1, NULL, 0);
+  // xTaskCreatePinnedToCore(TaskReadIna, "ina", 4096, NULL, 1, NULL, 0);
   // timer.setInterval(1000L, check);
 }
 
 void loop()
 {
-  Blynk.run();
-  timer.run();
-
-  // if (millis() - lastUpdate < 500) return; // 2 Hz
-  // lastUpdate = millis();
 }
