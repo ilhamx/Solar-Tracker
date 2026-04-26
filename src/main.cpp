@@ -52,8 +52,35 @@ Servo servoTilt;
 #define PAN_PIN 17
 #define TILT_PIN 16
 
-float panAngle = 90;
-float tiltAngle = 90;
+float panAngle = 0;
+float tiltAngle = 0;
+
+// Manual control flag: when true, automatic tracking (updateSens) is paused
+volatile bool manualMode = false;
+
+// Helper functions untuk konversi dan clamp
+int clampInt(int v, int lo, int hi)
+{
+  if (v < lo)
+    return lo;
+  if (v > hi)
+    return hi;
+  return v;
+}
+
+// Konversi derajat (0-180) ke microseconds antara minUs..maxUs
+int degToUs(int deg, int minUs, int maxUs)
+{
+  deg = clampInt(deg, 0, 180);
+  return map(deg, 0, 180, minUs, maxUs);
+}
+
+// Konversi microseconds ke derajat
+int usToDeg(int us, int minUs, int maxUs)
+{
+  us = clampInt(us, minUs, maxUs);
+  return map(us, minUs, maxUs, 0, 180);
+}
 
 #define PAN_MIN 500
 #define PAN_MAX 2500
@@ -68,7 +95,7 @@ float shuntV2, busV2, current2;
 /*********** TRACKER PARAM ***********/
 float Kp_X; // pan is more sensitive to error, so we use a larger Kp
 float Kp_Y; // tilt is less sensitive to error, so we use a smaller Kp
-float deadzone = 0.1;
+float deadzone = 0.08;
 unsigned long lastUpdate = 0;
 
 // float getYaw()
@@ -154,19 +181,15 @@ void updateSens()
     xSemaphoreGive(i2cMutex);  // 🔓 UNLOCK
   }
 
-  L1_kalman = kalmanUpdate(L1); // example of using Kalman filter on one sensor (can be applied to all);
-  L2_kalman = kalmanUpdate(L2); // example of using Kalman filter on one sensor (can be applied to all);
-  L3_kalman = kalmanUpdate(L3); // example of using Kalman filter on one sensor (can be applied to all);
-  L4_kalman = kalmanUpdate(L4); // example of using Kalman filter on one sensor (can be applied to all);
+  L1 = kalmanUpdate(L1); // example of using Kalman filter on one sensor (can be applied to all);
+  L2 = kalmanUpdate(L2); // example of using Kalman filter on one sensor (can be applied to all);
+  L3 = kalmanUpdate(L3); // example of using Kalman filter on one sensor (can be applied to all);
+  L4 = kalmanUpdate(L4); // example of using Kalman filter on one sensor (can be applied to all);
 
   sum = L1 + L2 + L3 + L4 + 0.001;
 
-  if (sum < 100) // night protection
+  if (sum < 50) // night protection
   {
-    panAngle = 1500;
-    tiltAngle = 1700;
-    servoPan.write(panAngle);
-    servoTilt.write(tiltAngle);
     return;
   }
 
@@ -174,11 +197,13 @@ void updateSens()
    * Calculate normalized error in X and Y directions based on light levels
    * The idea is to find the imbalance in light intensity across the sensors
    */
-
   float errX = (L1 + L2) - (L3 + L4);
   float errY = (L1 + L3) - (L2 + L4);
 
-  nx = errX / sum;
+  if (tiltAngle > 1500)
+    nx = errX / sum;
+  else
+    nx = -errX / sum;
   ny = errY / sum;
 
   if (abs(nx) < deadzone)
@@ -187,62 +212,70 @@ void updateSens()
     ny = 0;
 
   /*********** CONTROL ***********/
+  Kp_X = 7; // adjust as needed
+  Kp_Y = 5; // adjust as needed
 
-  Kp_X = 8;             // adjust as needed
-  Kp_Y = 5;             // adjust as needed
-
-  
-  tiltAngle += ny * Kp_Y;
-  
   panAngle += nx * Kp_X;
   tiltAngle += ny * Kp_Y;
-  
+
   panAngle = constrain(panAngle, PAN_MIN, PAN_MAX);
   tiltAngle = constrain(tiltAngle, TILT_MIN, TILT_MAX);
-  
+
   static int panMinCounter = 0;
 
-  if (panAngle <= PAN_MIN) {
+  if (panAngle <= PAN_MIN)
+  {
     panMinCounter++;
-    if (panMinCounter >= 150) {
+    if (panMinCounter >= 150)
+    {
       int us = 600;
-      while(1) {
+      while (1)
+      {
         us += 10;
-        servoTilt.write(90); // keep tilt at 900 us while pan is recovering
+        // servoTilt.write(90); // keep tilt at 900 us while pan is recovering
         servoPan.writeMicroseconds(us);
-        if (us >= 1500) {
+        if (us >= 1500)
+        {
           break; // stop after reaching 1500 us
         }
-        vTaskDelay(pdMS_TO_TICKS(50)); // Delay 100ms
-    }
-      panAngle = 1500;
-      tiltAngle = 1500;
-      return;
-    }
-  } else {
-    panMinCounter = 0;
-  }
-  
-  static int panMaxCounter = 0;
-  
-  if (panAngle >= PAN_MAX) {
-    panMaxCounter++;
-    if (panMaxCounter >= 150) {
-      int us = 2400;
-      while(1) {
-        us -= 10;
-        servoTilt.write(90); // keep tilt at 900 us while pan is recovering
-        servoPan.writeMicroseconds(us);
-        if (us <= 1500) {
-          break; // stop after reaching 1500 us
-        }
-        vTaskDelay(pdMS_TO_TICKS(50)); // Delay 100ms
+        vTaskDelay(pdMS_TO_TICKS(70)); // Delay 100ms
       }
       panAngle = 1500;
       tiltAngle = 1500;
       return;
     }
-  } else {
+  }
+  else
+  {
+    panMinCounter = 0;
+  }
+
+  static int panMaxCounter = 0;
+
+  if (panAngle >= PAN_MAX)
+  {
+    panMaxCounter++;
+    if (panMaxCounter >= 150)
+    {
+      int us = 2400;
+      while (1)
+      {
+        us -= 10;
+        // servoTilt.write(90); // keep tilt at 900 us while pan is recovering
+        servoPan.writeMicroseconds(us);
+        if (us <= 1500)
+        {
+          break; // stop after reaching 1500 us
+        }
+        vTaskDelay(pdMS_TO_TICKS(70)); // Delay 100ms
+      }
+      panAngle = 1500;
+      tiltAngle = 1500;
+      return;
+    }
+  }
+  else
+  {
     panMaxCounter = 0;
   }
 
@@ -254,8 +287,19 @@ void TaskCalc(void *pvParameters)
 {
   for (;;)
   {
-    updateSens();
-    vTaskDelay(15 / portTICK_PERIOD_MS);
+
+    TickType_t lastWakeTime = xTaskGetTickCount();
+
+    while (1)
+    {
+      // kerja kamu di sini
+      // Jika manualMode aktif, kita skip updateSens sehingga operator bisa kontrol manual
+      if (!manualMode)
+      {
+        updateSens();
+      }
+      vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(20));
+    }
   }
 }
 
@@ -302,8 +346,12 @@ void sendBlynk() // send INA3221 data to Blynk every 3 seconds
     BLYNK_LOG("Cannot send INA3221 data to Blynk due to NaN values");
     return;
   }
-  Blynk.virtualWrite(V0, panAngle);
-  Blynk.virtualWrite(V1, tiltAngle);
+
+  int panDeg = map(panAngle, PAN_MIN, PAN_MAX, 0, 180);
+  int tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, 0, 180);
+  
+  Blynk.virtualWrite(V0, panDeg);
+  Blynk.virtualWrite(V1, tiltDeg);
   Blynk.virtualWrite(V2, current0);
   Blynk.virtualWrite(V3, busV0);
   Blynk.virtualWrite(V4, current1);
@@ -316,10 +364,195 @@ void TaskBlynk(void *pvParameters)
 {
   for (;;)
   {
-
+    
     Blynk.run();
     timer.run();
+    
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+  }
+}
 
+// Format perintah serial (case-insensitive, newline-terminated):
+// MANUAL ON            -> aktifkan mode manual (hentikan tracking otomatis)
+// MANUAL OFF           -> kembali ke mode otomatis
+// PAN <deg>            -> set pan ke sudut derajat (0-180)
+// TILT <deg>           -> set tilt ke sudut derajat (0-180)
+// PAN_US <us>          -> set pan microseconds langsung (min..max)
+// TILT_US <us>         -> set tilt microseconds langsung (min..max)
+// PAN_DELTA <deg>      -> ubah pan relatif dalam derajat (bisa negatif)
+// TILT_DELTA <deg>     -> ubah tilt relatif dalam derajat (bisa negatif)
+// STEP <n>             -> set stepSize (microseconds per update)
+// HOME                 -> kembalikan ke tengah (1500 us)
+// STATUS               -> print status saat ini
+// Contoh: "PAN 90" atau "PAN_DELTA -5"
+
+void ReadString(void *pvParameters)
+{
+  String buf;
+  for (;;)
+  {
+    while (Serial.available())
+    {
+      char c = Serial.read();
+      if (c == '\r')
+        continue;
+      if (c == '\n')
+      {
+        buf.trim();
+        if (buf.length() > 0)
+        {
+          // parse
+          String cmd = buf;
+          cmd.toUpperCase();
+
+          // Tokenize
+          int sp = cmd.indexOf(' ');
+          String verb = (sp == -1) ? cmd : cmd.substring(0, sp);
+          String arg = (sp == -1) ? "" : cmd.substring(sp + 1);
+
+          if (verb == "MANUAL")
+          {
+            arg.trim();
+            if (arg == "ON")
+            {
+              manualMode = true;
+              Serial.println("Manual mode: ON");
+            }
+            else if (arg == "OFF")
+            {
+              manualMode = false;
+              Serial.println("Manual mode: OFF");
+            }
+            else
+            {
+              Serial.println("Usage: MANUAL ON|OFF");
+            }
+          }
+          else if (verb == "PAN" || verb == "TILT")
+          {
+            if (arg.length() == 0)
+            {
+              Serial.println("Provide degree value, e.g. PAN 90");
+            }
+            else
+            {
+              int deg = arg.toInt();
+              if (verb == "PAN")
+              {
+                int us = degToUs(deg, PAN_MIN, PAN_MAX);
+                panAngle = us;
+                servoPan.writeMicroseconds(clampInt(us, PAN_MIN, PAN_MAX));
+                Serial.printf("PAN set: %d deg -> %d us\n", deg, us);
+              }
+              else
+              {
+                int us = degToUs(deg, TILT_MIN, TILT_MAX);
+                tiltAngle = us;
+                servoTilt.writeMicroseconds(clampInt(us, TILT_MIN, TILT_MAX));
+                Serial.printf("TILT set: %d deg -> %d us\n", deg, us);
+              }
+            }
+          }
+          else if (verb == "PAN_US" || verb == "TILT_US")
+          {
+            if (arg.length() == 0)
+            {
+              Serial.println("Provide microseconds value, e.g. PAN_US 1500");
+            }
+            else
+            {
+              int us = arg.toInt();
+              if (verb == "PAN_US")
+              {
+                us = clampInt(us, PAN_MIN, PAN_MAX);
+                panAngle = us;
+                servoPan.writeMicroseconds(us);
+                Serial.printf("PAN_US set: %d us\n", us);
+              }
+              else
+              {
+                us = clampInt(us, TILT_MIN, TILT_MAX);
+                tiltAngle = us;
+                servoTilt.writeMicroseconds(us);
+                Serial.printf("TILT_US set: %d us\n", us);
+              }
+            }
+          }
+          else if (verb == "PAN_DELTA" || verb == "TILT_DELTA")
+          {
+            if (arg.length() == 0)
+            {
+              Serial.println("Provide delta degrees, e.g. PAN_DELTA -5");
+            }
+            else
+            {
+              int d = arg.toInt();
+              if (verb == "PAN_DELTA")
+              {
+                int curDeg = usToDeg((int)panAngle, PAN_MIN, PAN_MAX);
+                int nd = clampInt(curDeg + d, 0, 180);
+                int us = degToUs(nd, PAN_MIN, PAN_MAX);
+                panAngle = us;
+                servoPan.writeMicroseconds(us);
+                Serial.printf("PAN_DELTA: now %d deg -> %d us\n", nd, us);
+              }
+              else
+              {
+                int curDeg = usToDeg((int)tiltAngle, TILT_MIN, TILT_MAX);
+                int nd = clampInt(curDeg + d, 0, 180);
+                int us = degToUs(nd, TILT_MIN, TILT_MAX);
+                tiltAngle = us;
+                servoTilt.writeMicroseconds(us);
+                Serial.printf("TILT_DELTA: now %d deg -> %d us\n", nd, us);
+              }
+            }
+          }
+          else if (verb == "STEP")
+          {
+            if (arg.length() == 0)
+            {
+              Serial.printf("Current stepSize: %d\n", stepSize);
+            }
+            else
+            {
+              int s = arg.toInt();
+              if (s <= 0)
+                Serial.println("Step must be > 0");
+              else
+              {
+                stepSize = s;
+                Serial.printf("stepSize set to %d\n", stepSize);
+              }
+            }
+          }
+          else if (verb == "HOME")
+          {
+            panAngle = 1500;
+            tiltAngle = 1500;
+            servoPan.writeMicroseconds(1500);
+            servoTilt.writeMicroseconds(1500);
+            Serial.println("Homing: pan/tilt -> 1500 us");
+          }
+          else if (verb == "STATUS")
+          {
+            int panDeg = usToDeg((int)panAngle, PAN_MIN, PAN_MAX);
+            int tiltDeg = usToDeg((int)tiltAngle, TILT_MIN, TILT_MAX);
+            Serial.printf("Manual:%s | pan=%d us (%d deg) | tilt=%d us (%d deg) | step=%d\n", manualMode ? "ON" : "OFF", (int)panAngle, panDeg, (int)tiltAngle, tiltDeg, stepSize);
+          }
+          else
+          {
+            Serial.println("Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS");
+          }
+        }
+        buf = "";
+      }
+      else
+      {
+        buf += c;
+      }
+
+      vTaskDelay(1 / portTICK_PERIOD_MS);
+    }
     vTaskDelay(50 / portTICK_PERIOD_MS);
   }
 }
@@ -328,12 +561,14 @@ void TaskUpdateSensors(void *pvParameters)
 {
   for (;;)
   {
-
+    
     // Serial.printf("CH1: Bus %.3f V | Current %.3f A\n", busV0, current0);
     // Serial.printf("CH2: Bus %.3f V | Current %.3f A\n", busV1, current1);
     // Serial.printf("CH3: Bus %.3f V | Current %.3f A\n", busV2, current2);
-
-    Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f | nx=%.3f ny=%.3f | Pan=%.1f Tilt=%.1f | Yaw=%.1f\n", L1_kalman, L2_kalman, L3_kalman, L4_kalman, sum, nx, ny, panAngle, tiltAngle, currentYaw);
+    
+    float panDeg = map(panAngle, PAN_MIN, PAN_MAX, 0, 180);
+    float tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, 0, 180);
+    Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f | nx=%.3f ny=%.3f | Pan=%.1f Tilt=%.1f | Rotasi=%.1f | Kemiringan=%.1f\n", L1, L2, L3, L4, sum, nx, ny, panAngle, tiltAngle, panDeg, tiltDeg);
 
     // Serial.printf("L1:%.0f L2:%.0f L3:%.0f L4:%.0f ", L1, L2, L3, L4);                                                                  // for plotting kalman effect in serial plotter
     // Serial.printf("L1_filtered:%.0f L2_filtered:%.0f L3_filtered:%.0f L4_filtered:%.0f\n", L1_kalman, L2_kalman, L3_kalman, L4_kalman); // for plotting kalman effect in serial plotter
@@ -388,8 +623,8 @@ void setup()
   Serial.println("Connecting to WiFi...");
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
   // timer.setInterval(20L, updateSens);  // read sensors and update control every n ms (adjust as needed)
-  timer.setInterval(500L, readINA); // read INA3221 every n ms
-  // timer.setInterval(60000L, sendBlynk); // send data to Blynk (adjust as needed)
+  timer.setInterval(500L, readINA);     // read INA3221 every n ms
+  timer.setInterval(30000L, sendBlynk); // send data to Blynk (adjust as needed)
   // timer.setInterval(100L, updateServo); // update servo positions every 100 ms (adjust as needed)
   // timer.setInterval(100L, []()
   //                   {
@@ -412,6 +647,7 @@ void setup()
   xTaskCreatePinnedToCore(TaskBlynk, "blynk", 4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(TaskUpdateSensors, "sensors", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(TaskCalc, "servoPanWrite", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(ReadString, "readString", 4096, NULL, 1, NULL, 0);
 }
 
 void loop()
