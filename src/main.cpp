@@ -283,26 +283,6 @@ void updateSens()
   servoTilt.write(tiltAngle);
 }
 
-void TaskCalc(void *pvParameters)
-{
-  for (;;)
-  {
-
-    TickType_t lastWakeTime = xTaskGetTickCount();
-
-    while (1)
-    {
-      // kerja kamu di sini
-      // Jika manualMode aktif, kita skip updateSens sehingga operator bisa kontrol manual
-      if (!manualMode)
-      {
-        updateSens();
-      }
-      vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(20));
-    }
-  }
-}
-
 void readINA()
 {
 
@@ -349,7 +329,7 @@ void sendBlynk() // send INA3221 data to Blynk every 3 seconds
 
   int panDeg = map(panAngle, PAN_MIN, PAN_MAX, 0, 180);
   int tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, 0, 180);
-  
+
   Blynk.virtualWrite(V0, panDeg);
   Blynk.virtualWrite(V1, tiltDeg);
   Blynk.virtualWrite(V2, current0);
@@ -358,18 +338,6 @@ void sendBlynk() // send INA3221 data to Blynk every 3 seconds
   Blynk.virtualWrite(V5, busV1);
   Blynk.virtualWrite(V6, current2);
   Blynk.virtualWrite(V7, busV2);
-}
-
-void TaskBlynk(void *pvParameters)
-{
-  for (;;)
-  {
-    
-    Blynk.run();
-    timer.run();
-    
-    vTaskDelay(50 / portTICK_PERIOD_MS);
-  }
 }
 
 // Format perintah serial (case-insensitive, newline-terminated):
@@ -381,6 +349,8 @@ void TaskBlynk(void *pvParameters)
 // TILT_US <us>         -> set tilt microseconds langsung (min..max)
 // PAN_DELTA <deg>      -> ubah pan relatif dalam derajat (bisa negatif)
 // TILT_DELTA <deg>     -> ubah tilt relatif dalam derajat (bisa negatif)
+// READINA              -> baca data dari INA3221
+// READSENS             -> baca data dari sensor cahaya
 // STEP <n>             -> set stepSize (microseconds per update)
 // HOME                 -> kembalikan ke tengah (1500 us)
 // STATUS               -> print status saat ini
@@ -539,9 +509,29 @@ void ReadString(void *pvParameters)
             int tiltDeg = usToDeg((int)tiltAngle, TILT_MIN, TILT_MAX);
             Serial.printf("Manual:%s | pan=%d us (%d deg) | tilt=%d us (%d deg) | step=%d\n", manualMode ? "ON" : "OFF", (int)panAngle, panDeg, (int)tiltAngle, tiltDeg, stepSize);
           }
+          else if (verb == "READINA")
+          {
+            readINA();
+            Serial.printf("CH1: Bus %.3f V | Current %.3f A\n", busV0, current0);
+            Serial.printf("CH2: Bus %.3f V | Current %.3f A\n", busV1, current1);
+            Serial.printf("CH3: Bus %.3f V | Current %.3f A\n", busV2, current2);
+          }
+          else if (verb == "READSENS")
+          {
+            if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
+            {
+              // 🔒 LOCK I2C
+              L4 = bh1.readLightLevel(); // top-left
+              L2 = bh2.readLightLevel(); // top-right
+              L3 = bh3.readLightLevel(); // bottom-left
+              L1 = bh4.readLightLevel(); // bottom-right
+              xSemaphoreGive(i2cMutex);  // 🔓 UNLOCK
+            }
+            Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f\n", L1, L2, L3, L4);
+          }
           else
           {
-            Serial.println("Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS");
+            Serial.println("Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS, READINA, READSENS");
           }
         }
         buf = "";
@@ -550,9 +540,39 @@ void ReadString(void *pvParameters)
       {
         buf += c;
       }
-
       vTaskDelay(1 / portTICK_PERIOD_MS);
     }
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+  }
+}
+
+void TaskCalc(void *pvParameters)
+{
+  for (;;)
+  {
+
+    TickType_t lastWakeTime = xTaskGetTickCount();
+    while (1)
+    {
+      // kerja kamu di sini
+      // Jika manualMode aktif, kita skip updateSens sehingga operator bisa kontrol manual
+      if (!manualMode)
+      {
+        updateSens();
+      }
+      vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(20));
+    }
+  }
+}
+
+void TaskBlynk(void *pvParameters)
+{
+  for (;;)
+  {
+
+    Blynk.run();
+    timer.run();
+
     vTaskDelay(50 / portTICK_PERIOD_MS);
   }
 }
@@ -561,18 +581,18 @@ void TaskUpdateSensors(void *pvParameters)
 {
   for (;;)
   {
-    
-    // Serial.printf("CH1: Bus %.3f V | Current %.3f A\n", busV0, current0);
-    // Serial.printf("CH2: Bus %.3f V | Current %.3f A\n", busV1, current1);
-    // Serial.printf("CH3: Bus %.3f V | Current %.3f A\n", busV2, current2);
-    
-    float panDeg = map(panAngle, PAN_MIN, PAN_MAX, 0, 180);
-    float tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, 0, 180);
-    Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f | nx=%.3f ny=%.3f | Pan=%.1f Tilt=%.1f | Rotasi=%.1f | Kemiringan=%.1f\n", L1, L2, L3, L4, sum, nx, ny, panAngle, tiltAngle, panDeg, tiltDeg);
+    if (!manualMode)
+    {
+      // Serial.printf("CH1: Bus %.3f V | Current %.3f A\n", busV0, current0);
+      // Serial.printf("CH2: Bus %.3f V | Current %.3f A\n", busV1, current1);
+      // Serial.printf("CH3: Bus %.3f V | Current %.3f A\n", busV2, current2);
+      float panDeg = map(panAngle, PAN_MIN, PAN_MAX, 0, 180);
+      float tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, 0, 180);
+      Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f | nx=%.3f ny=%.3f | Pan=%.1f Tilt=%.1f | Rotasi=%.1f | Kemiringan=%.1f\n", L1, L2, L3, L4, sum, nx, ny, panAngle, tiltAngle, panDeg, tiltDeg);
 
-    // Serial.printf("L1:%.0f L2:%.0f L3:%.0f L4:%.0f ", L1, L2, L3, L4);                                                                  // for plotting kalman effect in serial plotter
-    // Serial.printf("L1_filtered:%.0f L2_filtered:%.0f L3_filtered:%.0f L4_filtered:%.0f\n", L1_kalman, L2_kalman, L3_kalman, L4_kalman); // for plotting kalman effect in serial plotter
-
+      // Serial.printf("L1:%.0f L2:%.0f L3:%.0f L4:%.0f ", L1, L2, L3, L4);                                                                  // for plotting kalman effect in serial plotter
+      // Serial.printf("L1_filtered:%.0f L2_filtered:%.0f L3_filtered:%.0f L4_filtered:%.0f\n", L1_kalman, L2_kalman, L3_kalman, L4_kalman); // for plotting kalman effect in serial plotter
+    }
     vTaskDelay(200 / portTICK_PERIOD_MS);
   }
 }
