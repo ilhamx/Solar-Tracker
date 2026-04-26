@@ -169,7 +169,7 @@ void updateSens()
   if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
   {
     // 🔒 LOCK I2C
-    L4 = bh1.readLightLevel(); // top-left
+    L4 = bh4.readLightLevel(); // top-left
     L2 = bh2.readLightLevel(); // top-right
     xSemaphoreGive(i2cMutex);  // 🔓 UNLOCK
   }
@@ -177,7 +177,7 @@ void updateSens()
   {
     // 🔒 LOCK I2C
     L3 = bh3.readLightLevel(); // bottom-left
-    L1 = bh4.readLightLevel(); // bottom-right
+    L1 = bh1.readLightLevel(); // bottom-right
     xSemaphoreGive(i2cMutex);  // 🔓 UNLOCK
   }
 
@@ -228,7 +228,7 @@ void updateSens()
     panMinCounter++;
     if (panMinCounter >= 150)
     {
-      int us = 600;
+      int us = 500;
       while (1)
       {
         us += 10;
@@ -521,13 +521,14 @@ void ReadString(void *pvParameters)
             if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
             {
               // 🔒 LOCK I2C
-              L4 = bh1.readLightLevel(); // top-left
+              L1 = bh1.readLightLevel(); // top-left
               L2 = bh2.readLightLevel(); // top-right
               L3 = bh3.readLightLevel(); // bottom-left
-              L1 = bh4.readLightLevel(); // bottom-right
+              L4 = bh4.readLightLevel(); // bottom-right
               xSemaphoreGive(i2cMutex);  // 🔓 UNLOCK
             }
-            Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f\n", L1, L2, L3, L4);
+            sum = L1 + L2 + L3 + L4;
+            Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f\n", L1, L2, L3, L4, sum);
           }
           else
           {
@@ -540,7 +541,7 @@ void ReadString(void *pvParameters)
       {
         buf += c;
       }
-      vTaskDelay(1 / portTICK_PERIOD_MS);
+      vTaskDelay(10 / portTICK_PERIOD_MS);
     }
     vTaskDelay(50 / portTICK_PERIOD_MS);
   }
@@ -569,10 +570,8 @@ void TaskBlynk(void *pvParameters)
 {
   for (;;)
   {
-
     Blynk.run();
     timer.run();
-
     vTaskDelay(50 / portTICK_PERIOD_MS);
   }
 }
@@ -622,10 +621,10 @@ void setup()
 
   /*********** INIT BH1750 ***********/
   Serial.println("Initializing BH1750 sensors...");
-  bh1.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire);
+  bh4.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire);
   bh2.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire);
   bh3.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &I2CBus2);
-  bh4.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &I2CBus2);
+  bh1.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &I2CBus2);
 
   /*********** SERVO ***********/
   Serial.println("Initializing servos...");
@@ -666,8 +665,9 @@ void setup()
 
   xTaskCreatePinnedToCore(TaskBlynk, "blynk", 4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(TaskUpdateSensors, "sensors", 4096, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(TaskCalc, "servoPanWrite", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(TaskCalc, "TaskCalc", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(ReadString, "readString", 4096, NULL, 1, NULL, 0);
+  
 }
 
 void loop()
