@@ -52,8 +52,8 @@ Servo servoTilt;
 #define PAN_PIN 17
 #define TILT_PIN 16
 
-float panAngle = 0;
-float tiltAngle = 0;
+float panAngle = 1500;
+float tiltAngle = 1500;
 
 // Manual control flag: when true, automatic tracking (updateSens) is paused
 volatile bool manualMode = false;
@@ -314,6 +314,17 @@ void readINA()
   else
   {
     // BLYNK_LOG("Light Levels: L1=%.0f, L2=%.0f, L3=%.0f, L4=%.0f", L1, L2, L3, L4);
+  }
+}
+
+void checkWifi(){
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    digitalWrite(LED_BUILTIN, LOW);
+  }
+  else
+  {
+    digitalWrite(LED_BUILTIN, HIGH);
   }
 }
 
@@ -599,6 +610,8 @@ void TaskUpdateSensors(void *pvParameters)
 void setup()
 {
   Serial.begin(115200);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
 
   /*********** INIT I2C ***********/
   Serial.println("Initializing I2C buses...");
@@ -632,32 +645,11 @@ void setup()
   servoTilt.setPeriodHertz(200);
   servoPan.attach(PAN_PIN);
   servoTilt.attach(TILT_PIN);
-  servoPan.writeMicroseconds(1500);
-  servoTilt.writeMicroseconds(1500);
-
-  // simple yaw zeroing
-  yaw0 = 0;
-
-  /*********** BLYNK ***********/
-  Serial.println("Connecting to WiFi...");
-  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
-  // timer.setInterval(20L, updateSens);  // read sensors and update control every n ms (adjust as needed)
-  timer.setInterval(500L, readINA);     // read INA3221 every n ms
-  timer.setInterval(30000L, sendBlynk); // send data to Blynk (adjust as needed)
-  // timer.setInterval(100L, updateServo); // update servo positions every 100 ms (adjust as needed)
-  // timer.setInterval(100L, []()
-  //                   {
-  //                     // BLYNK_LOG("CH1: Shunt %.3f mV | Bus %.3f V | Current %.3f A", shuntV0, busV0, current0);
-  //                     // BLYNK_LOG("CH2: Shunt %.3f mV | Bus %.3f V | Current %.3f A", shuntV1, busV1, current1);
-  //                     // BLYNK_LOG("CH3: Shunt %.3f mV | Bus %.3f V | Current %.3f A", shuntV2, busV2, current2);
-
-  //                     // BLYNK_LOG("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f | nx=%.3f ny=%.3f | Pan=%.1f Tilt=%.1f | Yaw=%.1f", L1, L2, L3, L4, sum, nx, ny, panAngle, tiltAngle, currentYaw);
-  //                     Serial.printf("L1:%.0f L2:%.0f L3:%.0f L4:%.0f ", L1, L2, L3, L4);                                                                  // for plotting kalman effect in serial plotter
-  //                     Serial.printf("L1_filtered:%.0f L2_filtered:%.0f L3_filtered:%.0f L4_filtered:%.0f\n", L1_kalman, L2_kalman, L3_kalman, L4_kalman); // for plotting kalman effect in serial plotter
-  //                   });
+  servoPan.writeMicroseconds(panAngle);
+  servoTilt.writeMicroseconds(tiltAngle);
 
   i2cMutex = xSemaphoreCreateMutex();
-
+  
   if (i2cMutex == NULL)
   {
     Serial.println("Mutex gagal dibuat!");
@@ -667,7 +659,16 @@ void setup()
   xTaskCreatePinnedToCore(TaskUpdateSensors, "sensors", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(TaskCalc, "TaskCalc", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(ReadString, "readString", 4096, NULL, 1, NULL, 0);
-  
+
+  /*********** BLYNK ***********/
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid, pass); // Manually connect to Wi-Fi
+  Blynk.config(BLYNK_AUTH_TOKEN); // Configure Blynk, but don't connect yet
+
+  timer.setInterval(500L, readINA);     // read INA3221 every n ms
+  timer.setInterval(30000L, sendBlynk); // send data to Blynk (adjust as needed)
+  timer.setInterval(1000L, checkWifi); // send data to Blynk (adjust as needed)
+
 }
 
 void loop()
