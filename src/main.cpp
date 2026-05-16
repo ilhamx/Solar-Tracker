@@ -98,18 +98,6 @@ float Kp_Y; // tilt is less sensitive to error, so we use a smaller Kp
 float deadzone = 0.08;
 unsigned long lastUpdate = 0;
 
-// float getYaw()
-// {
-//   static float angle = 0;
-//   int16_t gx, gy, gz;
-//   mpu.getRotation(&gx, &gy, &gz);
-
-//   float gz_dps = gz / 131.0; // convert to deg/s
-//   angle += gz_dps * 0.5;     // 0.5 sec loop time
-
-//   return angle;
-// }
-
 float kalmanUpdate(float measurement)
 {
 
@@ -339,7 +327,8 @@ void sendBlynk() // send INA3221 data to Blynk every 3 seconds
   }
 
   int panDeg = map(panAngle, PAN_MIN, PAN_MAX, 0, 180);
-  int tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, 0, 180);
+  int tiltDeg = servoTilt.read();
+  // int tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, 0, 180);
 
   Blynk.virtualWrite(V0, panDeg);
   Blynk.virtualWrite(V1, tiltDeg);
@@ -593,9 +582,9 @@ void TaskUpdateSensors(void *pvParameters)
   {
     if (!manualMode)
     {
-      // Serial.printf("CH1: Bus %.3f V | Current %.3f A\n", busV0, current0);
-      // Serial.printf("CH2: Bus %.3f V | Current %.3f A\n", busV1, current1);
-      // Serial.printf("CH3: Bus %.3f V | Current %.3f A\n", busV2, current2);
+      Serial.printf("CH1: Bus %.3f V | Current %.3f A\n", busV0, current0);
+      Serial.printf("CH2: Bus %.3f V | Current %.3f A\n", busV1, current1);
+      Serial.printf("CH3: Bus %.3f V | Current %.3f A\n", busV2, current2);
       float panDeg = map(panAngle, PAN_MIN, PAN_MAX, 0, 180);
       float tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, 0, 180);
       Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f | nx=%.3f ny=%.3f | Pan=%.1f Tilt=%.1f | Rotasi=%.1f | Kemiringan=%.1f\n", L1, L2, L3, L4, sum, nx, ny, panAngle, tiltAngle, panDeg, tiltDeg);
@@ -603,7 +592,7 @@ void TaskUpdateSensors(void *pvParameters)
       // Serial.printf("L1:%.0f L2:%.0f L3:%.0f L4:%.0f ", L1, L2, L3, L4);                                                                  // for plotting kalman effect in serial plotter
       // Serial.printf("L1_filtered:%.0f L2_filtered:%.0f L3_filtered:%.0f L4_filtered:%.0f\n", L1_kalman, L2_kalman, L3_kalman, L4_kalman); // for plotting kalman effect in serial plotter
     }
-    vTaskDelay(200 / portTICK_PERIOD_MS);
+    vTaskDelay(500 / portTICK_PERIOD_MS);
   }
 }
 
