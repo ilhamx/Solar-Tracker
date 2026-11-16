@@ -1,33 +1,35 @@
-/*********** BLYNK ***********/
-
 #include <Arduino.h>
-#include "Adafruit_INA3221.h"
 
 // Create an INA3221 object
-Adafruit_INA3221 ina;
-
-// Blynk setup
-#define BLYNK_TEMPLATE_ID "TMPL6eR1bVog2"
-#define BLYNK_TEMPLATE_NAME "Solar Tracker"
-#define BLYNK_AUTH_TOKEN "XOPuG9s9pjBzVcIWq-BsI5d6jrSCh5Cq"
-
-#define BLYNK_PRINT Serial
+#include "INA226.h"
+INA226 INA(0x40);
 
 // #define Wire I2CBus1
 #include <WiFi.h>
-#include <BlynkSimpleEsp32.h>
+#include "mqtt_client.h"
 
-char ssid[] = "noni";
-char pass[] = "1234567890";
-
-BlynkTimer timer; // Create a timer object to handle timed events
+char ssid[] = "LPG_3KG";
+char pass[] = "piulbaikhati";
 
 /*********** I2C ***********/
 #include <Wire.h>
-// TwoWire I2CBus1 = TwoWire(0); // default
-TwoWire I2CBus2 = TwoWire(1); // second bus
 SemaphoreHandle_t i2cMutex;
 
+// Pin Sensor LDR 1-4
+#define LDR1 35
+#define LDR2 34
+#define LDR3 36
+#define LDR4 39
+
+// batas hasil pengukuran nilai maksimum dan minimum ldr, untuk menentukan apakah sensor terjadi masalah.
+#define MAX_LDR 5
+#define MIN_LDR 1018
+
+#define LED_WIFI 2
+#define LED_STATUS 15
+
+bool ledStatus = false, ledWifi = false;
+float busVoltage, shuntVoltage, current, power;
 float yaw0 = 0;
 float currentYaw = 0;
 float L1, L2, L3, L4;                             // light levels from 4 sensors
@@ -35,14 +37,6 @@ float L1_kalman, L2_kalman, L3_kalman, L4_kalman; // kalman-filtered light level
 float sum, nx, ny;                                // for fusion calculations
 
 #define YAW_LIMIT 160 // max rotation from start (degrees)
-
-/*********** BH1750 ***********/
-#include <BH1750.h>
-
-BH1750 bh1; // Bus1 addr 0x23
-BH1750 bh2; // Bus1 addr 0x5C
-BH1750 bh3; // Bus2 addr 0x23
-BH1750 bh4; // Bus2 addr 0x5C
 
 /*********** SERVO ***********/
 #include <ESP32Servo.h>
@@ -104,11 +98,6 @@ int tiltUsToDeg(int us)
   return map(us, TILT_MIN, TILT_MAX, TILT_DEG_MIN, TILT_DEG_MAX);
 }
 
-// global variables for ina3221
-float shuntV0, busV0, current0;
-float shuntV1, busV1, current1;
-float shuntV2, busV2, current2;
-
 /*********** TRACKER PARAM ***********/
 float Kp_X; // pan is more sensitive to error, so we use a larger Kp
 float Kp_Y; // tilt is less sensitive to error, so we use a smaller Kp
@@ -117,7 +106,6 @@ unsigned long lastUpdate = 0;
 
 float kalmanUpdate(float measurement)
 {
-
   float x = 0;    // estimate
   float P = 1;    // estimation error
   float Q = 0.01; // process noise
@@ -171,18 +159,10 @@ void writePan(int targetUs)
 // walaupun tracking otomatis (updateSens) sedang di-skip.
 void readSensors()
 {
-  if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
-  {
-    L4 = bh4.readLightLevel();
-    L2 = bh2.readLightLevel();
-    xSemaphoreGive(i2cMutex);
-  }
-  if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
-  {
-    L3 = bh3.readLightLevel();
-    L1 = bh1.readLightLevel();
-    xSemaphoreGive(i2cMutex);
-  }
+  L1 = analogRead(LDR1);
+  L2 = analogRead(LDR2);
+  L3 = analogRead(LDR3);
+  L4 = analogRead(LDR4);
 
   L1 = kalmanUpdate(L1);
   L2 = kalmanUpdate(L2);
@@ -197,20 +177,10 @@ void updateSens()
   /*********** READ SENSORS ***********/
   // Serial.println("reading sensor");
 
-  if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
-  {
-    // 🔒 LOCK I2C
-    L4 = bh4.readLightLevel(); // top-left
-    L2 = bh2.readLightLevel(); // top-right
-    xSemaphoreGive(i2cMutex);  // 🔓 UNLOCK
-  }
-  if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
-  {
-    // 🔒 LOCK I2C
-    L3 = bh3.readLightLevel(); // bottom-left
-    L1 = bh1.readLightLevel(); // bottom-right
-    xSemaphoreGive(i2cMutex);  // 🔓 UNLOCK
-  }
+  L1 = analogRead(LDR1);
+  L2 = analogRead(LDR2);
+  L3 = analogRead(LDR3);
+  L4 = analogRead(LDR4);
 
   L1 = kalmanUpdate(L1); // example of using Kalman filter on one sensor (can be applied to all);
   L2 = kalmanUpdate(L2); // example of using Kalman filter on one sensor (can be applied to all);
@@ -316,75 +286,62 @@ void updateSens()
 
 void readINA()
 {
-
   if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
   {
-    // 🔒 LOCK I2C
-    // shuntV0 = ina.getShuntVoltage(0);
-    busV0 = ina.getBusVoltage(0);
-    current0 = -ina.getCurrentAmps(0);
+    busVoltage = INA.getBusVoltage();      // Tegangan beban (Volt)
+    shuntVoltage = INA.getShuntVoltage_mV(); // Tegangan pada shunt (mV)
+    current = INA.getCurrent_mA();           // Arus (milliampere)
+    power = INA.getPower_mW();               // Daya (mW)
 
-    // shuntV1 = ina.getShuntVoltage(1);
-    busV1 = ina.getBusVoltage(1);
-    current1 = -ina.getCurrentAmps(1);
+    // Tampilkan ke Serial Monitor
+    // Serial.print("Tegangan Bus: "); Serial.print(busVoltage); Serial.println(" V");
+    // Serial.print("Arus        : "); Serial.print(current); Serial.println(" mA");
+    // Serial.print("Daya        : "); Serial.print(power); Serial.println(" mW");
+    // Serial.println("----------------u-------------");
 
-    // shuntV2 = ina.getShuntVoltage(2);
-    busV2 = ina.getBusVoltage(2);
-    current2 = ina.getCurrentAmps(2);
-
-    xSemaphoreGive(i2cMutex); // 🔓 UNLOCK
+    xSemaphoreGive(i2cMutex); // UNLOCK
   }
-
-  if (isnan(shuntV0) || isnan(busV0) || isnan(current0) ||
-      isnan(shuntV1) || isnan(busV1) || isnan(current1) ||
-      isnan(shuntV2) || isnan(busV2) || isnan(current2))
-  {
-    BLYNK_LOG("Failed to read INA3221");
-    return;
-  }
-  else
-  {
-    // BLYNK_LOG("Light Levels: L1=%.0f, L2=%.0f, L3=%.0f, L4=%.0f", L1, L2, L3, L4);
-  }
+  // if (isnan(shuntV0) || isnan(busV0) || isnan(current0) ||
+  //     isnan(shuntV1) || isnan(busV1) || isnan(current1) ||
+  //     isnan(shuntV2) || isnan(busV2) || isnan(current2))
+  // {
+  //   return;
+  // }
 }
 
-void checkWifi(){
+void checkWifi()
+{
   if (WiFi.status() == WL_CONNECTED)
   {
-    digitalWrite(2, LOW);
+    digitalWrite(LED_WIFI, HIGH);
   }
   else
   {
-    digitalWrite(2, HIGH);
+    digitalWrite(LED_WIFI, LOW);
+
+    digitalWrite(LED_WIFI, HIGH);
   }
 }
 
 void sendBlynk() // send INA3221 data to Blynk every 3 seconds
 {
-  if (isnan(busV0) || isnan(current0) ||
-      isnan(busV1) || isnan(current1) ||
-      isnan(busV2) || isnan(current2))
-  {
-    BLYNK_LOG("Cannot send INA3221 data to Blynk due to NaN values");
-    return;
-  }
 
   int panDeg = map(panAngle, PAN_MIN, PAN_MAX, 0, 180);
   int tiltDeg = servoTilt.read();
   // int tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, 0, 180);
 
-  Blynk.virtualWrite(V0, panDeg);
-  Blynk.virtualWrite(V1, tiltDeg);
-  Blynk.virtualWrite(V2, current0);
-  Blynk.virtualWrite(V3, busV0);
-  Blynk.virtualWrite(V4, current1);
-  Blynk.virtualWrite(V5, busV1);
-  Blynk.virtualWrite(V6, current2); 
-  Blynk.virtualWrite(V7, busV2);
-  Blynk.virtualWrite(V8,  L1);
-  Blynk.virtualWrite(V9,  L2);
-  Blynk.virtualWrite(V10, L3);
-  Blynk.virtualWrite(V11, L4);
+  // Blynk.virtualWrite(V0, panDeg);
+  // Blynk.virtualWrite(V1, tiltDeg);
+  // Blynk.virtualWrite(V2, current0);
+  // Blynk.virtualWrite(V3, busV0);
+  // Blynk.virtualWrite(V4, current1);
+  // Blynk.virtualWrite(V5, busV1);
+  // Blynk.virtualWrite(V6, current2);
+  // Blynk.virtualWrite(V7, busV2);
+  // Blynk.virtualWrite(V8, L1);
+  // Blynk.virtualWrite(V9, L2);
+  // Blynk.virtualWrite(V10, L3);
+  // Blynk.virtualWrite(V11, L4);
 }
 
 // Format perintah serial (case-insensitive, newline-terminated):
@@ -558,22 +515,13 @@ void ReadString(void *pvParameters)
           }
           else if (verb == "READINA")
           {
-            readINA();
-            Serial.printf("CH1: Bus %.3f V | Current %.3f A\n", busV0, current0);
-            Serial.printf("CH2: Bus %.3f V | Current %.3f A\n", busV1, current1);
-            Serial.printf("CH3: Bus %.3f V | Current %.3f A\n", busV2, current2);
+            // readINA();
+            // Serial.printf("CH1: Bus %.3f V | Current %.3f A\n", busV0, current0);
+            // Serial.printf("CH2: Bus %.3f V | Current %.3f A\n", busV1, current1);
+            // Serial.printf("CH3: Bus %.3f V | Current %.3f A\n", busV2, current2);
           }
           else if (verb == "READSENS")
           {
-            if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
-            {
-              // 🔒 LOCK I2C
-              L1 = bh1.readLightLevel(); // top-left
-              L2 = bh2.readLightLevel(); // top-right
-              L3 = bh3.readLightLevel(); // bottom-left
-              L4 = bh4.readLightLevel(); // bottom-right
-              xSemaphoreGive(i2cMutex);  // 🔓 UNLOCK
-            }
             sum = L1 + L2 + L3 + L4;
             Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f\n", L1, L2, L3, L4, sum);
           }
@@ -594,7 +542,7 @@ void ReadString(void *pvParameters)
   }
 }
 
-void TaskCalc(void *pvParameters)
+void TaskMain(void *pvParameters)
 {
   for (;;)
   {
@@ -619,12 +567,10 @@ void TaskCalc(void *pvParameters)
   }
 }
 
-void TaskBlynk(void *pvParameters)
+void TaskMqtt(void *pvParameters)
 {
   for (;;)
   {
-    Blynk.run();
-    timer.run();
     vTaskDelay(50 / portTICK_PERIOD_MS);
   }
 }
@@ -634,15 +580,10 @@ void TaskUpdateSensors(void *pvParameters)
   for (;;)
   {
     // Print status ke Serial Monitor selalu berjalan, baik Manual ON maupun OFF
-    Serial.printf("CH1: Bus %.3f V | Current %.3f A\n", busV0, current0);
-    Serial.printf("CH2: Bus %.3f V | Current %.3f A\n", busV1, current1);
-    Serial.printf("CH3: Bus %.3f V | Current %.3f A\n", busV2, current2);
+    Serial.printf("CH1: Bus %.3f V | Current %.3f A | Shunt Voltage %.3f V | Power %.3f W\n", busVoltage, current, shuntVoltage, power);
     float panDeg = map(panAngle, PAN_MIN, PAN_MAX, 0, 180);
     float tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, TILT_DEG_MIN, TILT_DEG_MAX);
     Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f | nx=%.3f ny=%.3f | Pan=%.1f Tilt=%.1f | Rotasi=%.1f | Kemiringan=%.1f | Manual=%s\n", L1, L2, L3, L4, sum, nx, ny, panAngle, tiltAngle, panDeg, tiltDeg, manualMode ? "ON" : "OFF");
-
-    // Serial.printf("L1:%.0f L2:%.0f L3:%.0f L4:%.0f ", L1, L2, L3, L4);                                                                  // for plotting kalman effect in serial plotter
-    // Serial.printf("L1_filtered:%.0f L2_filtered:%.0f L3_filtered:%.0f L4_filtered:%.0f\n", L1_kalman, L2_kalman, L3_kalman, L4_kalman); // for plotting kalman effect in serial plotter
 
     vTaskDelay(10000 / portTICK_PERIOD_MS);
   }
@@ -651,49 +592,63 @@ void TaskUpdateSensors(void *pvParameters)
 void setup()
 {
   Serial.begin(115200);
-  pinMode(2, OUTPUT);
-  digitalWrite(2, LOW);
-  
-  /*********** INIT I2C ***********/
+  pinMode(LED_STATUS, OUTPUT);
+  pinMode(LED_WIFI, OUTPUT);
+  digitalWrite(LED_STATUS, LOW);
+  digitalWrite(LED_WIFI, LOW);
+
+  // Inisialisasi  I2C
   Serial.println("Initializing I2C buses...");
   Wire.begin(21, 22, 100000); // SDA, SCL
-  I2CBus2.begin(19, 18, 100000);
 
-  if (!ina.begin(0x40, &Wire))
-  { // can use other I2C addresses or buses
-    Serial.println("Failed to find INA3221 chip");
-    while (1)
-      delay(10);
-  }
-  Serial.println("INA3221 Found!");
+  readSensors();
 
-  ina.setAveragingMode(INA3221_AVG_16_SAMPLES);
-  for (uint8_t i = 0; i < 3; i++)
+  // Cek batas bawah (putus/korslet ke GND) dan batas atas (putus/korslet ke VCC)
+  bool errorBawah = (L1 <= MIN_LDR || L2 <= MIN_LDR || L3 <= MIN_LDR || L4 <= MIN_LDR);
+  bool errorAtas = (L1 >= MAX_LDR || L2 >= MAX_LDR || L3 >= MAX_LDR || L4 >= MAX_LDR);
+
+  if (errorBawah || errorAtas)
   {
-    ina.setShuntResistance(i, 0.1); // set shunt resistor value in ohms (adjust as needed)
+    Serial.println("Salah satu sensor bermasalah, periksa kabel!");
+    while (1)
+    { // Error Sensor dua kali kedip
+      digitalWrite(LED_STATUS, HIGH);
+      delay(100);
+      digitalWrite(LED_STATUS, LOW);
+      delay(100);
+      digitalWrite(LED_STATUS, HIGH);
+      delay(100);
+      digitalWrite(LED_STATUS, LOW);
+      delay(1000);
+    }
   }
 
-  /*********** INIT BH1750 ***********/
-  Serial.println("Initializing BH1750 sensors...");
-  if (!bh4.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire))
-    Serial.println("bh4 (Bus1, 0x23) FAILED to init!");
-  else
-    Serial.println("bh4 (Bus1, 0x23) OK");
+  // Inisialisasi sensor INA226
+  if (!INA.begin())
+  {
+    Serial.println("Gagal mendeteksi sensor INA226! Periksa kabel.");
+    while (1) // Error INA226 tiga kali kedip
+    {
+      digitalWrite(LED_STATUS, HIGH);
+      delay(100);
+      digitalWrite(LED_STATUS, LOW);
+      delay(100);
+      digitalWrite(LED_STATUS, HIGH);
+      delay(100);
+      digitalWrite(LED_STATUS, LOW);
+      delay(100);
+      digitalWrite(LED_STATUS, HIGH);
+      delay(100);
+      digitalWrite(LED_STATUS, LOW);
+      delay(1000);
+    }
+  }
 
-  if (!bh2.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire))
-    Serial.println("bh2 (Bus1, 0x5C) FAILED to init!");
-  else
-    Serial.println("bh2 (Bus1, 0x5C) OK");
+  // Kalibrasi arus maksimal (misal: 10 Ampere) dan nilai resistor shunt (misal: 0.1 Ohm)
+  // Sesuaikan dengan nilai resistor shunt fisik pada modul Anda (umumnya 0.1 Ohm atau 0.002 Ohm)
+  INA.setMaxCurrentShunt(10.0, 0.1);
 
-  if (!bh3.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &I2CBus2))
-    Serial.println("bh3 (Bus2, 0x23) FAILED to init!");
-  else
-    Serial.println("bh3 (Bus2, 0x23) OK");
-
-  if (!bh1.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &I2CBus2))
-    Serial.println("bh1 (Bus2, 0x5C) FAILED to init!");
-  else
-    Serial.println("bh1 (Bus2, 0x5C) OK");
+  Serial.println("INA226 berhasil diinisialisasi.");
 
   /*********** SERVO ***********/
   Serial.println("Initializing servos...");
@@ -705,26 +660,20 @@ void setup()
   servoTilt.writeMicroseconds(tiltAngle);
 
   i2cMutex = xSemaphoreCreateMutex();
-  
+
   if (i2cMutex == NULL)
   {
     Serial.println("Mutex gagal dibuat!");
   }
 
-  xTaskCreatePinnedToCore(TaskBlynk, "blynk", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(TaskMqtt, "mqtt", 4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(TaskUpdateSensors, "sensors", 4096, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(TaskCalc, "TaskCalc", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(TaskMain, "TaskMain", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(ReadString, "readString", 4096, NULL, 1, NULL, 0);
 
   /*********** BLYNK ***********/
   Serial.println("Connecting to WiFi...");
   WiFi.begin(ssid, pass); // Manually connect to Wi-Fi
-  Blynk.config(BLYNK_AUTH_TOKEN); // Configure Blynk, but don't connect yet
-
-  timer.setInterval(500L, readINA);     // read INA3221 every n ms
-  timer.setInterval(30000L, sendBlynk); // send data to Blynk (adjust as needed)
-  timer.setInterval(1000L, checkWifi); // send data to Blynk (adjust as needed)
-
 }
 
 void loop()
