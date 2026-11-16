@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <U8g2lib.h>
 
 // Create an INA3221 object
 #include "INA226.h"
@@ -52,6 +53,98 @@ float tiltAngle = 1500;
 // Manual control flag: when true, automatic tracking (updateSens) is paused
 volatile bool manualMode = false;
 
+//U8G2_NULL u8g2(U8G2_R0);	// null device, a 8x8 pixel display which does nothing
+//U8G2_SSD1306_128X64_NONAME_F_4W_SW_SPI u8g2(U8G2_R0, /* clock=*/ 13, /* data=*/ 11, /* cs=*/ 10, /* dc=*/ 9, /* reset=*/ 8);
+//U8G2_SSD1306_128X64_NONAME_F_4W_HW_SPI u8g2(U8G2_R0, /* cs=*/ 12, /* dc=*/ 4, /* reset=*/ 6);	// Arduboy (Production, Kickstarter Edition)
+//U8G2_SSD1306_128X64_NONAME_F_4W_HW_SPI u8g2(U8G2_R0, /* cs=*/ 10, /* dc=*/ 9, /* reset=*/ 8);
+//U8G2_SSD1306_128X64_NONAME_F_3W_SW_SPI u8g2(U8G2_R0, /* clock=*/ 13, /* data=*/ 11, /* cs=*/ 10, /* reset=*/ 8);
+//U8G2_SSD1306_128X64_NONAME_F_3W_HW_SPI u8g2(U8G2_R0, /* cs=*/ 10, /* reset=*/ 8);
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+//U8G2_SSD1306_128X64_ALT0_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);   // same as the NONAME variant, but may solve the "every 2nd line skipped" problem
+//U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ 13, /* data=*/ 11, /* reset=*/ 8);
+//U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ SCL, /* data=*/ SDA, /* reset=*/ U8X8_PIN_NONE);   // All Boards without Reset of the Display
+//U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ 16, /* data=*/ 17, /* reset=*/ U8X8_PIN_NONE);   // ESP32 Thing, pure SW emulated I2C
+//U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE, /* clock=*/ 16, /* data=*/ 17);   // ESP32 Thing, HW I2C with pin remapping
+
+// Konfigurasi Broker MQTT WSS
+const char *mqtt_broker_uri = "wss://mqtt.solar2axis.my.id:443/mqtt";
+const char *topic_pub = "esp32/ina/sensor";
+const char *topic_sub = "esp32/perintah";
+
+esp_mqtt_client_handle_t client;
+bool isMqttConnected = false;
+unsigned long lastPublish = 0;
+
+// Handler untuk menangkap semua event MQTT (Koneksi, Data Masuk, Error)
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+{
+  esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+
+  switch ((esp_mqtt_event_id_t)event_id)
+  {
+  case MQTT_EVENT_CONNECTED:
+    Serial.println("[MQTT] Terhubung ke broker WSS!");
+    isMqttConnected = true;
+    // Subscribe ke topik setelah berhasil terhubung
+    esp_mqtt_client_subscribe(client, topic_sub, 1);
+    Serial.printf("[MQTT] Subscribed ke topik: %s\n", topic_sub);
+    break;
+
+  case MQTT_EVENT_DISCONNECTED:
+    Serial.println("[MQTT] Terputus dari broker.");
+    isMqttConnected = false;
+    break;
+
+  case MQTT_EVENT_DATA:
+    // Menangani pesan masuk dari topik yang di-subscribe
+    Serial.println("[MQTT] Pesan diterima!");
+    Serial.printf("Topik : %.*s\n", event->topic_len, event->topic);
+    Serial.printf("Data  : %.*s\n", event->data_len, event->data);
+    break;
+
+  case MQTT_EVENT_ERROR:
+    Serial.println("[MQTT] Terjadi kesalahan koneksi/TLS.");
+    break;
+
+  default:
+    break;
+  }
+}
+void mqtt_app_start()
+{
+  esp_mqtt_client_config_t mqtt_cfg = {};
+
+  // Alamat lengkap beserta path WebSocket (/mqtt atau /ws tergantung broker)
+  mqtt_cfg.uri = mqtt_broker_uri;
+
+  // Verifikasi sertifikat SSL menggunakan bundle CA bawaan ESP32
+  mqtt_cfg.use_global_ca_store = true;
+
+  // Opsional: Jika broker membutuhkan username & password
+  mqtt_cfg.username = "iot";
+  mqtt_cfg.password = "anjay";
+
+  client = esp_mqtt_client_init(&mqtt_cfg);
+  esp_mqtt_client_register_event(client, (esp_mqtt_event_id_t)ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+  esp_mqtt_client_start(client);
+}
+void TaskMqtt(void *pvParameters)
+{
+  for (;;)
+  {
+    if (isMqttConnected && (millis() - lastPublish > 5000))
+    {
+      lastPublish = millis();
+
+      String payload = "{\"suhu\": 28.5, \"uptime\": " + String(millis() / 1000) + "}";
+
+      // Parameter: client, topic, data, len (0 = otomatis), qos, retain
+      int msg_id = esp_mqtt_client_publish(client, topic_pub, payload.c_str(), 0, 1, 0);
+      Serial.printf("[MQTT] Publish terkirim (msg_id=%d): %s\n", msg_id, payload.c_str());
+    }
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
+}
 // Helper functions untuk konversi dan clamp
 int clampInt(int v, int lo, int hi)
 {
@@ -288,7 +381,7 @@ void readINA()
 {
   if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
   {
-    busVoltage = INA.getBusVoltage();      // Tegangan beban (Volt)
+    busVoltage = INA.getBusVoltage();        // Tegangan beban (Volt)
     shuntVoltage = INA.getShuntVoltage_mV(); // Tegangan pada shunt (mV)
     current = INA.getCurrent_mA();           // Arus (milliampere)
     power = INA.getPower_mW();               // Daya (mW)
@@ -314,6 +407,14 @@ void checkWifi()
   if (WiFi.status() == WL_CONNECTED)
   {
     digitalWrite(LED_WIFI, HIGH);
+    static bool hasrun = false;
+
+    if (!hasrun)
+    {
+      // Mulai klien MQTT WSS
+      mqtt_app_start();
+      hasrun = true;
+    }
   }
   else
   {
@@ -567,14 +668,6 @@ void TaskMain(void *pvParameters)
   }
 }
 
-void TaskMqtt(void *pvParameters)
-{
-  for (;;)
-  {
-    vTaskDelay(50 / portTICK_PERIOD_MS);
-  }
-}
-
 void TaskUpdateSensors(void *pvParameters)
 {
   for (;;)
@@ -599,14 +692,21 @@ void setup()
 
   // Inisialisasi  I2C
   Serial.println("Initializing I2C buses...");
-  Wire.begin(21, 22, 100000); // SDA, SCL
-
-  readSensors();
+  Wire.begin(21, 22); // SDA, SCL
+  delay(100);
+  u8g2.begin();
+  delay(100);
+  u8g2.clearBuffer();					// clear the internal memory
+  u8g2.setFont(u8g2_font_ncenB08_tr);	// choose a suitable font
+  u8g2.drawStr(0,10,"Hello World!");	// write something to the internal memory
+  u8g2.sendBuffer(); // transfer internal memory to the display
+  delay(100);
 
   // Cek batas bawah (putus/korslet ke GND) dan batas atas (putus/korslet ke VCC)
+  readSensors();
   bool errorBawah = (L1 <= MIN_LDR || L2 <= MIN_LDR || L3 <= MIN_LDR || L4 <= MIN_LDR);
   bool errorAtas = (L1 >= MAX_LDR || L2 >= MAX_LDR || L3 >= MAX_LDR || L4 >= MAX_LDR);
-
+  
   if (errorBawah || errorAtas)
   {
     Serial.println("Salah satu sensor bermasalah, periksa kabel!");
