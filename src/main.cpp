@@ -17,8 +17,8 @@ Adafruit_INA3221 ina;
 #include <WiFi.h>
 #include <BlynkSimpleEsp32.h>
 
-char ssid[] = "URT";
-char pass[] = "unimusrobotic";
+char ssid[] = "noni";
+char pass[] = "1234567890";
 
 BlynkTimer timer; // Create a timer object to handle timed events
 
@@ -84,8 +84,25 @@ int usToDeg(int us, int minUs, int maxUs)
 
 #define PAN_MIN 500
 #define PAN_MAX 2500
-#define TILT_MIN 1000
-#define TILT_MAX 1800
+#define TILT_MIN 900
+#define TILT_MAX 1700
+
+// Skala derajat fisik untuk tilt (sesuai kemiringan aktual panel), dipakai
+// untuk command TILT/TILT_DELTA/STATUS supaya konsisten dengan log "Kemiringan"
+#define TILT_DEG_MIN 45
+#define TILT_DEG_MAX 135
+
+int tiltDegToUs(int deg)
+{
+  deg = clampInt(deg, TILT_DEG_MIN, TILT_DEG_MAX);
+  return map(deg, TILT_DEG_MIN, TILT_DEG_MAX, TILT_MIN, TILT_MAX);
+}
+
+int tiltUsToDeg(int us)
+{
+  us = clampInt(us, TILT_MIN, TILT_MAX);
+  return map(us, TILT_MIN, TILT_MAX, TILT_DEG_MIN, TILT_DEG_MAX);
+}
 
 // global variables for ina3221
 float shuntV0, busV0, current0;
@@ -147,6 +164,32 @@ void writePan(int targetUs)
   }
 
   servoPan.writeMicroseconds(currentPan);
+}
+
+// Fungsi khusus baca sensor cahaya saja (tanpa kontrol servo)
+// Dipakai saat manualMode aktif, supaya L1-L4 tetap ter-update
+// walaupun tracking otomatis (updateSens) sedang di-skip.
+void readSensors()
+{
+  if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
+  {
+    L4 = bh4.readLightLevel();
+    L2 = bh2.readLightLevel();
+    xSemaphoreGive(i2cMutex);
+  }
+  if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
+  {
+    L3 = bh3.readLightLevel();
+    L1 = bh1.readLightLevel();
+    xSemaphoreGive(i2cMutex);
+  }
+
+  L1 = kalmanUpdate(L1);
+  L2 = kalmanUpdate(L2);
+  L3 = kalmanUpdate(L3);
+  L4 = kalmanUpdate(L4);
+
+  sum = L1 + L2 + L3 + L4 + 0.001;
 }
 
 void updateSens()
@@ -308,11 +351,11 @@ void readINA()
 void checkWifi(){
   if (WiFi.status() == WL_CONNECTED)
   {
-    digitalWrite(LED_BUILTIN, LOW);
+    digitalWrite(2, LOW);
   }
   else
   {
-    digitalWrite(LED_BUILTIN, HIGH);
+    digitalWrite(2, HIGH);
   }
 }
 
@@ -336,8 +379,12 @@ void sendBlynk() // send INA3221 data to Blynk every 3 seconds
   Blynk.virtualWrite(V3, busV0);
   Blynk.virtualWrite(V4, current1);
   Blynk.virtualWrite(V5, busV1);
-  Blynk.virtualWrite(V6, current2);
+  Blynk.virtualWrite(V6, current2); 
   Blynk.virtualWrite(V7, busV2);
+  Blynk.virtualWrite(V8,  L1);
+  Blynk.virtualWrite(V9,  L2);
+  Blynk.virtualWrite(V10, L3);
+  Blynk.virtualWrite(V11, L4);
 }
 
 // Format perintah serial (case-insensitive, newline-terminated):
@@ -352,7 +399,7 @@ void sendBlynk() // send INA3221 data to Blynk every 3 seconds
 // READINA              -> baca data dari INA3221
 // READSENS             -> baca data dari sensor cahaya
 // STEP <n>             -> set stepSize (microseconds per update)
-// HOME                 -> kembalikan ke tengah (1500 us)
+// HOME                 -> kembalikan ke tengah
 // STATUS               -> print status saat ini
 // Contoh: "PAN 90" atau "PAN_DELTA -5"
 
@@ -416,7 +463,7 @@ void ReadString(void *pvParameters)
               }
               else
               {
-                int us = degToUs(deg, TILT_MIN, TILT_MAX);
+                int us = tiltDegToUs(deg);
                 tiltAngle = us;
                 servoTilt.writeMicroseconds(clampInt(us, TILT_MIN, TILT_MAX));
                 Serial.printf("TILT set: %d deg -> %d us\n", deg, us);
@@ -468,9 +515,9 @@ void ReadString(void *pvParameters)
               }
               else
               {
-                int curDeg = usToDeg((int)tiltAngle, TILT_MIN, TILT_MAX);
-                int nd = clampInt(curDeg + d, 0, 180);
-                int us = degToUs(nd, TILT_MIN, TILT_MAX);
+                int curDeg = tiltUsToDeg((int)tiltAngle);
+                int nd = clampInt(curDeg + d, TILT_DEG_MIN, TILT_DEG_MAX);
+                int us = tiltDegToUs(nd);
                 tiltAngle = us;
                 servoTilt.writeMicroseconds(us);
                 Serial.printf("TILT_DELTA: now %d deg -> %d us\n", nd, us);
@@ -497,16 +544,16 @@ void ReadString(void *pvParameters)
           }
           else if (verb == "HOME")
           {
-            panAngle = 1500;
-            tiltAngle = 1500;
-            servoPan.writeMicroseconds(1500);
-            servoTilt.writeMicroseconds(1500);
-            Serial.println("Homing: pan/tilt -> 1500 us");
+            panAngle = (PAN_MIN + PAN_MAX) / 2;    // 1500 us
+            tiltAngle = (TILT_MIN + TILT_MAX) / 2; // 1300 us
+            servoPan.writeMicroseconds((int)panAngle);
+            servoTilt.writeMicroseconds((int)tiltAngle);
+            Serial.printf("Homing: pan -> %d us | tilt -> %d us\n", (int)panAngle, (int)tiltAngle);
           }
           else if (verb == "STATUS")
           {
             int panDeg = usToDeg((int)panAngle, PAN_MIN, PAN_MAX);
-            int tiltDeg = usToDeg((int)tiltAngle, TILT_MIN, TILT_MAX);
+            int tiltDeg = tiltUsToDeg((int)tiltAngle);
             Serial.printf("Manual:%s | pan=%d us (%d deg) | tilt=%d us (%d deg) | step=%d\n", manualMode ? "ON" : "OFF", (int)panAngle, panDeg, (int)tiltAngle, tiltDeg, stepSize);
           }
           else if (verb == "READINA")
@@ -556,10 +603,16 @@ void TaskCalc(void *pvParameters)
     while (1)
     {
       // kerja kamu di sini
-      // Jika manualMode aktif, kita skip updateSens sehingga operator bisa kontrol manual
+      // Jika manualMode aktif, kita skip updateSens (tracking otomatis dimatikan)
+      // tapi tetap panggil readSensors() supaya L1-L4 tetap ter-update
+      // dan datanya tetap fresh saat dikirim ke Blynk / dicetak ke Serial.
       if (!manualMode)
       {
         updateSens();
+      }
+      else
+      {
+        readSensors();
       }
       vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(20));
     }
@@ -580,28 +633,27 @@ void TaskUpdateSensors(void *pvParameters)
 {
   for (;;)
   {
-    if (!manualMode)
-    {
-      Serial.printf("CH1: Bus %.3f V | Current %.3f A\n", busV0, current0);
-      Serial.printf("CH2: Bus %.3f V | Current %.3f A\n", busV1, current1);
-      Serial.printf("CH3: Bus %.3f V | Current %.3f A\n", busV2, current2);
-      float panDeg = map(panAngle, PAN_MIN, PAN_MAX, 0, 180);
-      float tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, 0, 180);
-      Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f | nx=%.3f ny=%.3f | Pan=%.1f Tilt=%.1f | Rotasi=%.1f | Kemiringan=%.1f\n", L1, L2, L3, L4, sum, nx, ny, panAngle, tiltAngle, panDeg, tiltDeg);
+    // Print status ke Serial Monitor selalu berjalan, baik Manual ON maupun OFF
+    Serial.printf("CH1: Bus %.3f V | Current %.3f A\n", busV0, current0);
+    Serial.printf("CH2: Bus %.3f V | Current %.3f A\n", busV1, current1);
+    Serial.printf("CH3: Bus %.3f V | Current %.3f A\n", busV2, current2);
+    float panDeg = map(panAngle, PAN_MIN, PAN_MAX, 0, 180);
+    float tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, TILT_DEG_MIN, TILT_DEG_MAX);
+    Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f | nx=%.3f ny=%.3f | Pan=%.1f Tilt=%.1f | Rotasi=%.1f | Kemiringan=%.1f | Manual=%s\n", L1, L2, L3, L4, sum, nx, ny, panAngle, tiltAngle, panDeg, tiltDeg, manualMode ? "ON" : "OFF");
 
-      // Serial.printf("L1:%.0f L2:%.0f L3:%.0f L4:%.0f ", L1, L2, L3, L4);                                                                  // for plotting kalman effect in serial plotter
-      // Serial.printf("L1_filtered:%.0f L2_filtered:%.0f L3_filtered:%.0f L4_filtered:%.0f\n", L1_kalman, L2_kalman, L3_kalman, L4_kalman); // for plotting kalman effect in serial plotter
-    }
-    vTaskDelay(500 / portTICK_PERIOD_MS);
+    // Serial.printf("L1:%.0f L2:%.0f L3:%.0f L4:%.0f ", L1, L2, L3, L4);                                                                  // for plotting kalman effect in serial plotter
+    // Serial.printf("L1_filtered:%.0f L2_filtered:%.0f L3_filtered:%.0f L4_filtered:%.0f\n", L1_kalman, L2_kalman, L3_kalman, L4_kalman); // for plotting kalman effect in serial plotter
+
+    vTaskDelay(10000 / portTICK_PERIOD_MS);
   }
 }
 
 void setup()
 {
   Serial.begin(115200);
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);
-
+  pinMode(2, OUTPUT);
+  digitalWrite(2, LOW);
+  
   /*********** INIT I2C ***********/
   Serial.println("Initializing I2C buses...");
   Wire.begin(21, 22, 100000); // SDA, SCL
@@ -623,10 +675,25 @@ void setup()
 
   /*********** INIT BH1750 ***********/
   Serial.println("Initializing BH1750 sensors...");
-  bh4.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire);
-  bh2.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire);
-  bh3.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &I2CBus2);
-  bh1.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &I2CBus2);
+  if (!bh4.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire))
+    Serial.println("bh4 (Bus1, 0x23) FAILED to init!");
+  else
+    Serial.println("bh4 (Bus1, 0x23) OK");
+
+  if (!bh2.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire))
+    Serial.println("bh2 (Bus1, 0x5C) FAILED to init!");
+  else
+    Serial.println("bh2 (Bus1, 0x5C) OK");
+
+  if (!bh3.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &I2CBus2))
+    Serial.println("bh3 (Bus2, 0x23) FAILED to init!");
+  else
+    Serial.println("bh3 (Bus2, 0x23) OK");
+
+  if (!bh1.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &I2CBus2))
+    Serial.println("bh1 (Bus2, 0x5C) FAILED to init!");
+  else
+    Serial.println("bh1 (Bus2, 0x5C) OK");
 
   /*********** SERVO ***********/
   Serial.println("Initializing servos...");
