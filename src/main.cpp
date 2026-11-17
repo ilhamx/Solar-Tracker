@@ -1,5 +1,28 @@
+// Format perintah serial (case-insensitive, newline-terminated):
+// MANUAL ON            -> aktifkan mode manual (hentikan tracking otomatis)
+// MANUAL OFF           -> kembali ke mode otomatis
+// PAN <deg>            -> set pan ke sudut derajat (0-180)
+// TILT <deg>           -> set tilt ke sudut derajat (0-180)
+// PAN_US <us>          -> set pan microseconds langsung (min..max)
+// TILT_US <us>         -> set tilt microseconds langsung (min..max)
+// PAN_DELTA <deg>      -> ubah pan relatif dalam derajat (bisa negatif)
+// TILT_DELTA <deg>     -> ubah tilt relatif dalam derajat (bisa negatif)
+// READINA              -> baca data dari INA3221
+// READSENS             -> baca data dari sensor cahaya
+// STEP <n>             -> set stepSize (microseconds per update)
+// HOME                 -> kembalikan ke tengah
+// STATUS               -> print status saat ini
+// Contoh: "PAN 90" atau "PAN_DELTA -5"
+// Fungsi helper terpusat untuk mengeksekusi perintah (baik dari Serial maupun MQTT)
+
 #include <Arduino.h>
-#include <U8g2lib.h>
+SemaphoreHandle_t i2cMutex;
+#include <oled.h>
+#include <DallasTemperature.h>
+
+// Konfigurasi pin dll...
+OneWire oneWire(23);
+DallasTemperature sensors(&oneWire);
 
 // Create an INA3221 object
 #include "INA226.h"
@@ -14,7 +37,6 @@ char pass[] = "piulbaikhati";
 
 /*********** I2C ***********/
 #include <Wire.h>
-SemaphoreHandle_t i2cMutex;
 
 // Pin Sensor LDR 1-4
 #define LDR1 35
@@ -29,13 +51,27 @@ SemaphoreHandle_t i2cMutex;
 #define LED_WIFI 2
 #define LED_STATUS 15
 
-bool ledStatus = false, ledWifi = false;
-float busVoltage, shuntVoltage, current, power;
+/*********** TRACKER PARAM ***********/
+
+// Queue handle untuk menampung string log (kapasitas 10 antrian)
+QueueHandle_t serialLogQueue;
+float Kp_X; // pan is more sensitive to error, so we use a larger Kp
+float Kp_Y; // tilt is less sensitive to error, so we use a smaller Kp
+float deadzone = 0.08;
+unsigned long lastUpdate = 0;
+
+int stepSize = 1;  // kecepatan gerak (semakin kecil = semakin halus)
+int deadband = 10; // toleransi biar gak jitter
+
+bool ledStatus = false, isWifiConnected = false;
 float yaw0 = 0;
 float currentYaw = 0;
-float L1, L2, L3, L4;                             // light levels from 4 sensors
-float L1_kalman, L2_kalman, L3_kalman, L4_kalman; // kalman-filtered light levels
+int currentPan = 600;   // posisi awal servo (microseconds)
+int currentTilt = 1500; // posisi awal servo (microseconds)
+float busVoltage, shuntVoltage, current, power;
+float L1, L2, L3, L4, tempC;                      // light levels from 4 sensors
 float sum, nx, ny;                                // for fusion calculations
+float L1_kalman, L2_kalman, L3_kalman, L4_kalman; // kalman-filtered light levels
 
 #define YAW_LIMIT 160 // max rotation from start (degrees)
 
@@ -47,34 +83,37 @@ Servo servoTilt;
 #define PAN_PIN 17
 #define TILT_PIN 16
 
+#define PAN_MIN 500
+#define PAN_MAX 2500
+#define TILT_MIN 900
+#define TILT_MAX 1700
+
+// Skala derajat fisik untuk tilt (sesuai kemiringan aktual panel), dipakai
+// untuk command TILT/TILT_DELTA/STATUS supaya konsisten dengan log "Kemiringan"
+#define TILT_DEG_MIN 45
+#define TILT_DEG_MAX 135
+
 float panAngle = 1500;
 float tiltAngle = 1500;
 
 // Manual control flag: when true, automatic tracking (updateSens) is paused
 volatile bool manualMode = false;
 
-//U8G2_NULL u8g2(U8G2_R0);	// null device, a 8x8 pixel display which does nothing
-//U8G2_SSD1306_128X64_NONAME_F_4W_SW_SPI u8g2(U8G2_R0, /* clock=*/ 13, /* data=*/ 11, /* cs=*/ 10, /* dc=*/ 9, /* reset=*/ 8);
-//U8G2_SSD1306_128X64_NONAME_F_4W_HW_SPI u8g2(U8G2_R0, /* cs=*/ 12, /* dc=*/ 4, /* reset=*/ 6);	// Arduboy (Production, Kickstarter Edition)
-//U8G2_SSD1306_128X64_NONAME_F_4W_HW_SPI u8g2(U8G2_R0, /* cs=*/ 10, /* dc=*/ 9, /* reset=*/ 8);
-//U8G2_SSD1306_128X64_NONAME_F_3W_SW_SPI u8g2(U8G2_R0, /* clock=*/ 13, /* data=*/ 11, /* cs=*/ 10, /* reset=*/ 8);
-//U8G2_SSD1306_128X64_NONAME_F_3W_HW_SPI u8g2(U8G2_R0, /* cs=*/ 10, /* reset=*/ 8);
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-//U8G2_SSD1306_128X64_ALT0_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);   // same as the NONAME variant, but may solve the "every 2nd line skipped" problem
-//U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ 13, /* data=*/ 11, /* reset=*/ 8);
-//U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ SCL, /* data=*/ SDA, /* reset=*/ U8X8_PIN_NONE);   // All Boards without Reset of the Display
-//U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ 16, /* data=*/ 17, /* reset=*/ U8X8_PIN_NONE);   // ESP32 Thing, pure SW emulated I2C
-//U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE, /* clock=*/ 16, /* data=*/ 17);   // ESP32 Thing, HW I2C with pin remapping
-
 // Konfigurasi Broker MQTT WSS
 const char *mqtt_broker_uri = "wss://mqtt.solar2axis.my.id:443/mqtt";
-const char *topic_pub = "esp32/ina/sensor";
-const char *topic_sub = "esp32/perintah";
+const char *mqtt_broker_uri_local = "mqtt://192.168.4.2:1883";
+const char *topic_pub_ina = "tracker/sensor/ina226";
+const char *topic_pub_ldr = "tracker/sensor/ldr";
+const char *topic_pub_servo = "tracker/servo/status";
+const char *topic_pub_temp = "tracker/sensor/temperature";
+const char *topic_pub_log = "tracker/log/serial";
+const char *topic_sub = "tracker/perintah";
 
 esp_mqtt_client_handle_t client;
 bool isMqttConnected = false;
 unsigned long lastPublish = 0;
 
+void executeCommand(String cmd);
 // Handler untuk menangkap semua event MQTT (Koneksi, Data Masuk, Error)
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
@@ -96,11 +135,22 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     break;
 
   case MQTT_EVENT_DATA:
-    // Menangani pesan masuk dari topik yang di-subscribe
+  {
     Serial.println("[MQTT] Pesan diterima!");
     Serial.printf("Topik : %.*s\n", event->topic_len, event->topic);
     Serial.printf("Data  : %.*s\n", event->data_len, event->data);
-    break;
+
+    // Ekstrak payload string dari event data
+    String payload = String(event->data).substring(0, event->data_len);
+    payload.trim();
+
+    if (payload.length() > 0)
+    {
+      // Jalankan perintah menggunakan fungsi helper yang sama dengan Serial
+      executeCommand(payload);
+    }
+  }
+  break;
 
   case MQTT_EVENT_ERROR:
     Serial.println("[MQTT] Terjadi kesalahan koneksi/TLS.");
@@ -110,39 +160,40 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     break;
   }
 }
-void mqtt_app_start()
+void mqtt_app_start(bool isLocal)
 {
   esp_mqtt_client_config_t mqtt_cfg = {};
 
-  // Alamat lengkap beserta path WebSocket (/mqtt atau /ws tergantung broker)
-  mqtt_cfg.uri = mqtt_broker_uri;
+  if (!isLocal)
+  { // internet
+    // Alamat lengkap beserta path WebSocket (/mqtt atau /ws tergantung broker)
+    mqtt_cfg.uri = mqtt_broker_uri;
 
-  // Verifikasi sertifikat SSL menggunakan bundle CA bawaan ESP32
-  mqtt_cfg.use_global_ca_store = true;
+    // Verifikasi sertifikat SSL menggunakan bundle CA bawaan ESP32
+    mqtt_cfg.use_global_ca_store = true;
 
-  // Opsional: Jika broker membutuhkan username & password
-  mqtt_cfg.username = "iot";
-  mqtt_cfg.password = "anjay";
+    // Opsional: Jika broker membutuhkan username & password
+    mqtt_cfg.username = "iot";
+    mqtt_cfg.password = "iot123";
+  }
+  else
+  { // local
+    mqtt_cfg.uri = mqtt_broker_uri_local;
+  }
 
   client = esp_mqtt_client_init(&mqtt_cfg);
   esp_mqtt_client_register_event(client, (esp_mqtt_event_id_t)ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
   esp_mqtt_client_start(client);
 }
-void TaskMqtt(void *pvParameters)
+// Fungsi helper agar mudah digunakan di mana saja
+void publishLogToMqtt(String message)
 {
-  for (;;)
+  if (serialLogQueue != NULL)
   {
-    if (isMqttConnected && (millis() - lastPublish > 5000))
-    {
-      lastPublish = millis();
-
-      String payload = "{\"suhu\": 28.5, \"uptime\": " + String(millis() / 1000) + "}";
-
-      // Parameter: client, topic, data, len (0 = otomatis), qos, retain
-      int msg_id = esp_mqtt_client_publish(client, topic_pub, payload.c_str(), 0, 1, 0);
-      Serial.printf("[MQTT] Publish terkirim (msg_id=%d): %s\n", msg_id, payload.c_str());
-    }
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    char buffer[128];
+    message.toCharArray(buffer, sizeof(buffer));
+    // Kirim ke queue dengan timeout 0 (non-blocking jika dipanggil dari interrupt/task cepat)
+    xQueueSend(serialLogQueue, &buffer, 0);
   }
 }
 // Helper functions untuk konversi dan clamp
@@ -154,49 +205,28 @@ int clampInt(int v, int lo, int hi)
     return hi;
   return v;
 }
-
 // Konversi derajat (0-180) ke microseconds antara minUs..maxUs
 int degToUs(int deg, int minUs, int maxUs)
 {
   deg = clampInt(deg, 0, 180);
   return map(deg, 0, 180, minUs, maxUs);
 }
-
 // Konversi microseconds ke derajat
 int usToDeg(int us, int minUs, int maxUs)
 {
   us = clampInt(us, minUs, maxUs);
   return map(us, minUs, maxUs, 0, 180);
 }
-
-#define PAN_MIN 500
-#define PAN_MAX 2500
-#define TILT_MIN 900
-#define TILT_MAX 1700
-
-// Skala derajat fisik untuk tilt (sesuai kemiringan aktual panel), dipakai
-// untuk command TILT/TILT_DELTA/STATUS supaya konsisten dengan log "Kemiringan"
-#define TILT_DEG_MIN 45
-#define TILT_DEG_MAX 135
-
 int tiltDegToUs(int deg)
 {
   deg = clampInt(deg, TILT_DEG_MIN, TILT_DEG_MAX);
   return map(deg, TILT_DEG_MIN, TILT_DEG_MAX, TILT_MIN, TILT_MAX);
 }
-
 int tiltUsToDeg(int us)
 {
   us = clampInt(us, TILT_MIN, TILT_MAX);
   return map(us, TILT_MIN, TILT_MAX, TILT_DEG_MIN, TILT_DEG_MAX);
 }
-
-/*********** TRACKER PARAM ***********/
-float Kp_X; // pan is more sensitive to error, so we use a larger Kp
-float Kp_Y; // tilt is less sensitive to error, so we use a smaller Kp
-float deadzone = 0.08;
-unsigned long lastUpdate = 0;
-
 float kalmanUpdate(float measurement)
 {
   float x = 0;    // estimate
@@ -218,12 +248,6 @@ float kalmanUpdate(float measurement)
 
   return x;
 }
-
-int currentPan = 600;   // posisi awal servo (microseconds)
-int currentTilt = 1500; // posisi awal servo (microseconds)
-int stepSize = 1;       // kecepatan gerak (semakin kecil = semakin halus)
-int deadband = 10;      // toleransi biar gak jitter
-
 void writePan(int targetUs)
 {
   int diff = targetUs - currentPan;
@@ -246,42 +270,395 @@ void writePan(int targetUs)
 
   servoPan.writeMicroseconds(currentPan);
 }
-
-// Fungsi khusus baca sensor cahaya saja (tanpa kontrol servo)
-// Dipakai saat manualMode aktif, supaya L1-L4 tetap ter-update
-// walaupun tracking otomatis (updateSens) sedang di-skip.
-void readSensors()
+void readLDR(void *pvParameters)
 {
-  L1 = analogRead(LDR1);
-  L2 = analogRead(LDR2);
-  L3 = analogRead(LDR3);
-  L4 = analogRead(LDR4);
+  for (;;)
+  {
+    L1 = analogRead(LDR1);
+    L2 = analogRead(LDR2);
+    L3 = analogRead(LDR3);
+    L4 = analogRead(LDR4);
 
-  L1 = kalmanUpdate(L1);
-  L2 = kalmanUpdate(L2);
-  L3 = kalmanUpdate(L3);
-  L4 = kalmanUpdate(L4);
-
-  sum = L1 + L2 + L3 + L4 + 0.001;
+    L1 = kalmanUpdate(L1);
+    L2 = kalmanUpdate(L2);
+    L3 = kalmanUpdate(L3);
+    L4 = kalmanUpdate(L4);
+    sum = L1 + L2 + L3 + L4 + 0.001;
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
 }
-
-void updateSens()
+void readINA()
 {
-  /*********** READ SENSORS ***********/
-  // Serial.println("reading sensor");
+  if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
+  {
+    busVoltage = INA.getBusVoltage();        // Tegangan beban (Volt)
+    shuntVoltage = INA.getShuntVoltage_mV(); // Tegangan pada shunt (mV)
+    current = INA.getCurrent_mA();           // Arus (milliampere)
+    power = INA.getPower_mW();               // Daya (mW)
 
-  L1 = analogRead(LDR1);
-  L2 = analogRead(LDR2);
-  L3 = analogRead(LDR3);
-  L4 = analogRead(LDR4);
+    // Tampilkan ke Serial Monitor
+    // Serial.print("Tegangan Bus: "); Serial.print(busVoltage); Serial.println(" V");
+    // Serial.print("Arus        : "); Serial.print(current); Serial.println(" mA");
+    // Serial.print("Daya        : "); Serial.print(power); Serial.println(" mW");
+    // Serial.println("----------------u-------------");
 
-  L1 = kalmanUpdate(L1); // example of using Kalman filter on one sensor (can be applied to all);
-  L2 = kalmanUpdate(L2); // example of using Kalman filter on one sensor (can be applied to all);
-  L3 = kalmanUpdate(L3); // example of using Kalman filter on one sensor (can be applied to all);
-  L4 = kalmanUpdate(L4); // example of using Kalman filter on one sensor (can be applied to all);
+    xSemaphoreGive(i2cMutex); // UNLOCK
+  }
+}
+void checkWifi(void *pvParameters)
+{
+  unsigned long timestart = millis();
+  bool hasrun = false;
+  for (;;)
+  {
+    unsigned long now = millis();
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      timestart = millis(); // reset waktu ketika wifi konek
+      isWifiConnected = true;
+      digitalWrite(LED_WIFI, HIGH);
+      if (!hasrun)
+      {
+        // Mulai klien MQTT WSS
+        mqtt_app_start(false);
+        hasrun = true;
+      }
+    }
+    else
+    {
+      isWifiConnected = false;
+      static bool blinking = false;
+      if (blinking)
+      digitalWrite(LED_WIFI, LOW);
+      else
+      digitalWrite(LED_WIFI, HIGH);
+      blinking = !blinking;
+    }
+    
+    static bool hasrun1 = false;
+    if (now - timestart >= 15000 && !hasrun1)
+    {
+      WiFi.disconnect(true);
+      vTaskDelay(pdMS_TO_TICKS(500));
+      // 2. Ubah mode sepenuhnya ke AP
+      WiFi.mode(WIFI_AP);
+      
+      // 3. Jalankan AP
+      WiFi.softAP("ESP32_Access_Point", "password123");
+      
+      Serial.print("Berhasil beralih ke AP Mode! IP: ");
+      Serial.println(WiFi.softAPIP());
+      mqtt_app_start(true);
+      hasrun1 = true;
+    }
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+}
+void executeCommand(String cmd)
+{
+  cmd.toUpperCase();
+  int sp = cmd.indexOf(' ');
+  String verb = (sp == -1) ? cmd : cmd.substring(0, sp);
+  String arg = (sp == -1) ? "" : cmd.substring(sp + 1);
 
-  sum = L1 + L2 + L3 + L4 + 0.001;
+  if (verb == "MANUAL")
+  {
+    arg.trim();
+    if (arg == "ON")
+    {
+      manualMode = true;
+      String msg = "Manual mode: ON";
+      Serial.println(msg);
+      publishLogToMqtt(msg);
+    }
+    else if (arg == "OFF")
+    {
+      manualMode = false;
+      String msg = "Manual mode: OFF";
+      Serial.println(msg);
+      publishLogToMqtt(msg);
+    }
+    else
+    {
+      String msg = "Usage: MANUAL ON|OFF";
+      Serial.println(msg);
+      publishLogToMqtt(msg);
+    }
+  }
+  else if (verb == "PAN" || verb == "TILT")
+  {
+    if (arg.length() == 0)
+    {
+      String msg = "Provide degree value, e.g. PAN 90";
+      Serial.println(msg);
+      publishLogToMqtt(msg);
+    }
+    else
+    {
+      int deg = arg.toInt();
+      if (verb == "PAN")
+      {
+        int us = degToUs(deg, PAN_MIN, PAN_MAX);
+        panAngle = us;
+        servoPan.writeMicroseconds(clampInt(us, PAN_MIN, PAN_MAX));
+        String msg = "PAN set: " + String(deg) + " deg -> " + String(us) + " us";
+        Serial.println(msg);
+        publishLogToMqtt(msg);
+      }
+      else
+      {
+        int us = tiltDegToUs(deg);
+        tiltAngle = us;
+        servoTilt.writeMicroseconds(clampInt(us, TILT_MIN, TILT_MAX));
+        String msg = "TILT set: " + String(deg) + " deg -> " + String(us) + " us";
+        Serial.println(msg);
+        publishLogToMqtt(msg);
+      }
+    }
+  }
+  else if (verb == "PAN_US" || verb == "TILT_US")
+  {
+    if (arg.length() == 0)
+    {
+      String msg = "Provide microseconds value, e.g. PAN_US 1500";
+      Serial.println(msg);
+      publishLogToMqtt(msg);
+    }
+    else
+    {
+      int us = arg.toInt();
+      if (verb == "PAN_US")
+      {
+        us = clampInt(us, PAN_MIN, PAN_MAX);
+        panAngle = us;
+        servoPan.writeMicroseconds(us);
+        String msg = "PAN_US set: " + String(us) + " us";
+        Serial.println(msg);
+        publishLogToMqtt(msg);
+      }
+      else
+      {
+        us = clampInt(us, TILT_MIN, TILT_MAX);
+        tiltAngle = us;
+        servoTilt.writeMicroseconds(us);
+        String msg = "TILT_US set: " + String(us) + " us";
+        Serial.println(msg);
+        publishLogToMqtt(msg);
+      }
+    }
+  }
+  else if (verb == "PAN_DELTA" || verb == "TILT_DELTA")
+  {
+    if (arg.length() == 0)
+    {
+      String msg = "Provide delta degrees, e.g. PAN_DELTA -5";
+      Serial.println(msg);
+      publishLogToMqtt(msg);
+    }
+    else
+    {
+      int d = arg.toInt();
+      if (verb == "PAN_DELTA")
+      {
+        int curDeg = usToDeg((int)panAngle, PAN_MIN, PAN_MAX);
+        int nd = clampInt(curDeg + d, 0, 180);
+        int us = degToUs(nd, PAN_MIN, PAN_MAX);
+        panAngle = us;
+        servoPan.writeMicroseconds(us);
+        String msg = "PAN_DELTA: now " + String(nd) + " deg -> " + String(us) + " us";
+        Serial.println(msg);
+        publishLogToMqtt(msg);
+      }
+      else
+      {
+        int curDeg = tiltUsToDeg((int)tiltAngle);
+        int nd = clampInt(curDeg + d, TILT_DEG_MIN, TILT_DEG_MAX);
+        int us = tiltDegToUs(nd);
+        tiltAngle = us;
+        servoTilt.writeMicroseconds(us);
+        String msg = "TILT_DELTA: now " + String(nd) + " deg -> " + String(us) + " us";
+        Serial.println(msg);
+        publishLogToMqtt(msg);
+      }
+    }
+  }
+  else if (verb == "STEP")
+  {
+    if (arg.length() == 0)
+    {
+      String msg = "Current stepSize: " + String(stepSize);
+      Serial.println(msg);
+      publishLogToMqtt(msg);
+    }
+    else
+    {
+      int s = arg.toInt();
+      if (s <= 0)
+      {
+        String msg = "Step must be > 0";
+        Serial.println(msg);
+        publishLogToMqtt(msg);
+      }
+      else
+      {
+        stepSize = s;
+        String msg = "stepSize set to " + String(stepSize);
+        Serial.println(msg);
+        publishLogToMqtt(msg);
+      }
+    }
+  }
+  else if (verb == "HOME")
+  {
+    panAngle = (PAN_MIN + PAN_MAX) / 2;    // 1500 us
+    tiltAngle = (TILT_MIN + TILT_MAX) / 2; // 1300 us
+    servoPan.writeMicroseconds((int)panAngle);
+    servoTilt.writeMicroseconds((int)tiltAngle);
+    String msg = "Homing: pan -> " + String((int)panAngle) + " us | tilt -> " + String((int)tiltAngle) + " us";
+    Serial.println(msg);
+    publishLogToMqtt(msg);
+  }
+  else if (verb == "STATUS")
+  {
+    int panDeg = usToDeg((int)panAngle, PAN_MIN, PAN_MAX);
+    int tiltDeg = tiltUsToDeg((int)tiltAngle);
+    char buf[128];
+    snprintf(buf, sizeof(buf), "Manual:%s | pan=%d us (%d deg) | tilt=%d us (%d deg) | step=%d",
+             manualMode ? "ON" : "OFF", (int)panAngle, panDeg, (int)tiltAngle, tiltDeg, stepSize);
+    Serial.println(buf);
+    publishLogToMqtt(buf);
+  }
+  else if (verb == "READINA")
+  {
+    // readINA();
+  }
+  else if (verb == "READSENS")
+  {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f\n", L1, L2, L3, L4, sum);
+    Serial.println(buf);
+    publishLogToMqtt(buf);
+  }
+  else
+  {
+    Serial.println("Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS, READINA, READSENS");
+    publishLogToMqtt("Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS, READINA, READSENS");
+  }
+}
+void TaskReadDS18B20(void *pvParameters)
+{
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  // Kita set task ini berjalan setiap 1 detik sekali (1000 ms)
+  const TickType_t xFrequency = pdMS_TO_TICKS(1000);
 
+  bool conversionStarted = false;
+
+  for (;;)
+  {
+    if (!conversionStarted)
+    {
+      // Tahap A: Perintahkan sensor mulai konversi suhu (tanpa menunggu/async)
+      sensors.setWaitForConversion(false); // PENTING: Set false agar tidak blocking
+      sensors.requestTemperatures();
+      conversionStarted = true;
+    }
+    else
+    {
+      // Tahap B: Ambil hasil suhunya (karena sudah lewat 1 detik dari perintah sebelumnya)
+      tempC = sensors.getTempCByIndex(0);
+
+      // Lakukan sesuatu dengan nilai tempC (simpan ke variabel global, dll)
+
+      // Mulai siklus konversi berikutnya
+      sensors.requestTemperatures();
+    }
+
+    // Task tidur tenang selama 1 detik tanpa membebani CPU
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+  }
+}
+void ReadString(void *pvParameters)
+{
+  String buf;
+  for (;;)
+  {
+    while (Serial.available())
+    {
+      char c = Serial.read();
+      if (c == '\r')
+        continue;
+      if (c == '\n')
+      {
+        buf.trim();
+        if (buf.length() > 0)
+        {
+          executeCommand(buf);
+        }
+        buf = "";
+      }
+      else
+      {
+        buf += c;
+      }
+      vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+  }
+}
+void TaskMqtt(void *pvParameters)
+{
+  char receivedLog[128];
+  for (;;)
+  {
+    if (isMqttConnected && (millis() - lastPublish > 1000))
+    {
+      lastPublish = millis();
+
+      readINA();
+      // Cek apakah ada antrian log serial yang harus dikirim segera
+      if (isMqttConnected && serialLogQueue != NULL)
+      {
+        // Ambil data dari queue jika ada
+        while (xQueueReceive(serialLogQueue, &receivedLog, 0) == pdPASS)
+        {
+          esp_mqtt_client_publish(client, topic_pub_log, receivedLog, 0, 1, 0);
+          vTaskDelay(pdMS_TO_TICKS(50)); // Jeda kecil antar publish agar tidak flood broker
+        }
+      }
+      // 1. Topik INA226 (Tegangan, Arus, Daya)
+      String payloadINA = "{\"bus_voltage\":" + String(busVoltage, 2) +
+                          ",\"shunt_voltage\":" + String(shuntVoltage, 2) +
+                          ",\"current\":" + String(current, 2) +
+                          ",\"power\":" + String(power, 2) + "}";
+      esp_mqtt_client_publish(client, "tracker/sensor/ina226", payloadINA.c_str(), 0, 1, 0);
+
+      // 2. Topik Sensor LDR (L1 - L4)
+      String payloadLDR = "{\"ldr1\":" + String(L1, 1) +
+                          ",\"ldr2\":" + String(L2, 1) +
+                          ",\"ldr3\":" + String(L3, 1) +
+                          ",\"ldr4\":" + String(L4, 1) +
+                          ",\"sum\":" + String(sum, 1) + "}";
+      esp_mqtt_client_publish(client, "tracker/sensor/ldr", payloadLDR.c_str(), 0, 1, 0);
+
+      // 3. Topik Sudut Tracker & Suhu
+      int panDeg = usToDeg((int)panAngle, PAN_MIN, PAN_MAX);
+      int tiltDeg = tiltUsToDeg((int)tiltAngle);
+      String payloadStatus = "{\"pan_us\":" + String((int)panAngle) +
+                             ",\"pan_deg\":" + String(panDeg) +
+                             ",\"tilt_us\":" + String((int)tiltAngle) +
+                             ",\"tilt_deg\":" + String(tiltDeg) +
+                             ",\"temp_c\":" + String(tempC, 2) +
+                             ",\"uptime\":" + String(millis() / 1000) + "}";
+      esp_mqtt_client_publish(client, "tracker/status", payloadStatus.c_str(), 0, 1, 0);
+
+      // Parameter: client, topic, data, len (0 = otomatis), qos, retain
+      Serial.println("[MQTT] Semua data sensor berhasil dipublish ke topik terpisah.");
+    }
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }
+}
+void tracking()
+{
   if (sum < 50) // night protection
   {
     return;
@@ -373,315 +750,19 @@ void updateSens()
     panMaxCounter = 0;
   }
 
-  servoPan.write(panAngle);
-  servoTilt.write(tiltAngle);
+  servoPan.writeMicroseconds(panAngle);
+  servoTilt.writeMicroseconds(tiltAngle);
 }
-
-void readINA()
-{
-  if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
-  {
-    busVoltage = INA.getBusVoltage();        // Tegangan beban (Volt)
-    shuntVoltage = INA.getShuntVoltage_mV(); // Tegangan pada shunt (mV)
-    current = INA.getCurrent_mA();           // Arus (milliampere)
-    power = INA.getPower_mW();               // Daya (mW)
-
-    // Tampilkan ke Serial Monitor
-    // Serial.print("Tegangan Bus: "); Serial.print(busVoltage); Serial.println(" V");
-    // Serial.print("Arus        : "); Serial.print(current); Serial.println(" mA");
-    // Serial.print("Daya        : "); Serial.print(power); Serial.println(" mW");
-    // Serial.println("----------------u-------------");
-
-    xSemaphoreGive(i2cMutex); // UNLOCK
-  }
-  // if (isnan(shuntV0) || isnan(busV0) || isnan(current0) ||
-  //     isnan(shuntV1) || isnan(busV1) || isnan(current1) ||
-  //     isnan(shuntV2) || isnan(busV2) || isnan(current2))
-  // {
-  //   return;
-  // }
-}
-
-void checkWifi()
-{
-  if (WiFi.status() == WL_CONNECTED)
-  {
-    digitalWrite(LED_WIFI, HIGH);
-    static bool hasrun = false;
-
-    if (!hasrun)
-    {
-      // Mulai klien MQTT WSS
-      mqtt_app_start();
-      hasrun = true;
-    }
-  }
-  else
-  {
-    digitalWrite(LED_WIFI, LOW);
-
-    digitalWrite(LED_WIFI, HIGH);
-  }
-}
-
-void sendBlynk() // send INA3221 data to Blynk every 3 seconds
-{
-
-  int panDeg = map(panAngle, PAN_MIN, PAN_MAX, 0, 180);
-  int tiltDeg = servoTilt.read();
-  // int tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, 0, 180);
-
-  // Blynk.virtualWrite(V0, panDeg);
-  // Blynk.virtualWrite(V1, tiltDeg);
-  // Blynk.virtualWrite(V2, current0);
-  // Blynk.virtualWrite(V3, busV0);
-  // Blynk.virtualWrite(V4, current1);
-  // Blynk.virtualWrite(V5, busV1);
-  // Blynk.virtualWrite(V6, current2);
-  // Blynk.virtualWrite(V7, busV2);
-  // Blynk.virtualWrite(V8, L1);
-  // Blynk.virtualWrite(V9, L2);
-  // Blynk.virtualWrite(V10, L3);
-  // Blynk.virtualWrite(V11, L4);
-}
-
-// Format perintah serial (case-insensitive, newline-terminated):
-// MANUAL ON            -> aktifkan mode manual (hentikan tracking otomatis)
-// MANUAL OFF           -> kembali ke mode otomatis
-// PAN <deg>            -> set pan ke sudut derajat (0-180)
-// TILT <deg>           -> set tilt ke sudut derajat (0-180)
-// PAN_US <us>          -> set pan microseconds langsung (min..max)
-// TILT_US <us>         -> set tilt microseconds langsung (min..max)
-// PAN_DELTA <deg>      -> ubah pan relatif dalam derajat (bisa negatif)
-// TILT_DELTA <deg>     -> ubah tilt relatif dalam derajat (bisa negatif)
-// READINA              -> baca data dari INA3221
-// READSENS             -> baca data dari sensor cahaya
-// STEP <n>             -> set stepSize (microseconds per update)
-// HOME                 -> kembalikan ke tengah
-// STATUS               -> print status saat ini
-// Contoh: "PAN 90" atau "PAN_DELTA -5"
-
-void ReadString(void *pvParameters)
-{
-  String buf;
-  for (;;)
-  {
-    while (Serial.available())
-    {
-      char c = Serial.read();
-      if (c == '\r')
-        continue;
-      if (c == '\n')
-      {
-        buf.trim();
-        if (buf.length() > 0)
-        {
-          // parse
-          String cmd = buf;
-          cmd.toUpperCase();
-
-          // Tokenize
-          int sp = cmd.indexOf(' ');
-          String verb = (sp == -1) ? cmd : cmd.substring(0, sp);
-          String arg = (sp == -1) ? "" : cmd.substring(sp + 1);
-
-          if (verb == "MANUAL")
-          {
-            arg.trim();
-            if (arg == "ON")
-            {
-              manualMode = true;
-              Serial.println("Manual mode: ON");
-            }
-            else if (arg == "OFF")
-            {
-              manualMode = false;
-              Serial.println("Manual mode: OFF");
-            }
-            else
-            {
-              Serial.println("Usage: MANUAL ON|OFF");
-            }
-          }
-          else if (verb == "PAN" || verb == "TILT")
-          {
-            if (arg.length() == 0)
-            {
-              Serial.println("Provide degree value, e.g. PAN 90");
-            }
-            else
-            {
-              int deg = arg.toInt();
-              if (verb == "PAN")
-              {
-                int us = degToUs(deg, PAN_MIN, PAN_MAX);
-                panAngle = us;
-                servoPan.writeMicroseconds(clampInt(us, PAN_MIN, PAN_MAX));
-                Serial.printf("PAN set: %d deg -> %d us\n", deg, us);
-              }
-              else
-              {
-                int us = tiltDegToUs(deg);
-                tiltAngle = us;
-                servoTilt.writeMicroseconds(clampInt(us, TILT_MIN, TILT_MAX));
-                Serial.printf("TILT set: %d deg -> %d us\n", deg, us);
-              }
-            }
-          }
-          else if (verb == "PAN_US" || verb == "TILT_US")
-          {
-            if (arg.length() == 0)
-            {
-              Serial.println("Provide microseconds value, e.g. PAN_US 1500");
-            }
-            else
-            {
-              int us = arg.toInt();
-              if (verb == "PAN_US")
-              {
-                us = clampInt(us, PAN_MIN, PAN_MAX);
-                panAngle = us;
-                servoPan.writeMicroseconds(us);
-                Serial.printf("PAN_US set: %d us\n", us);
-              }
-              else
-              {
-                us = clampInt(us, TILT_MIN, TILT_MAX);
-                tiltAngle = us;
-                servoTilt.writeMicroseconds(us);
-                Serial.printf("TILT_US set: %d us\n", us);
-              }
-            }
-          }
-          else if (verb == "PAN_DELTA" || verb == "TILT_DELTA")
-          {
-            if (arg.length() == 0)
-            {
-              Serial.println("Provide delta degrees, e.g. PAN_DELTA -5");
-            }
-            else
-            {
-              int d = arg.toInt();
-              if (verb == "PAN_DELTA")
-              {
-                int curDeg = usToDeg((int)panAngle, PAN_MIN, PAN_MAX);
-                int nd = clampInt(curDeg + d, 0, 180);
-                int us = degToUs(nd, PAN_MIN, PAN_MAX);
-                panAngle = us;
-                servoPan.writeMicroseconds(us);
-                Serial.printf("PAN_DELTA: now %d deg -> %d us\n", nd, us);
-              }
-              else
-              {
-                int curDeg = tiltUsToDeg((int)tiltAngle);
-                int nd = clampInt(curDeg + d, TILT_DEG_MIN, TILT_DEG_MAX);
-                int us = tiltDegToUs(nd);
-                tiltAngle = us;
-                servoTilt.writeMicroseconds(us);
-                Serial.printf("TILT_DELTA: now %d deg -> %d us\n", nd, us);
-              }
-            }
-          }
-          else if (verb == "STEP")
-          {
-            if (arg.length() == 0)
-            {
-              Serial.printf("Current stepSize: %d\n", stepSize);
-            }
-            else
-            {
-              int s = arg.toInt();
-              if (s <= 0)
-                Serial.println("Step must be > 0");
-              else
-              {
-                stepSize = s;
-                Serial.printf("stepSize set to %d\n", stepSize);
-              }
-            }
-          }
-          else if (verb == "HOME")
-          {
-            panAngle = (PAN_MIN + PAN_MAX) / 2;    // 1500 us
-            tiltAngle = (TILT_MIN + TILT_MAX) / 2; // 1300 us
-            servoPan.writeMicroseconds((int)panAngle);
-            servoTilt.writeMicroseconds((int)tiltAngle);
-            Serial.printf("Homing: pan -> %d us | tilt -> %d us\n", (int)panAngle, (int)tiltAngle);
-          }
-          else if (verb == "STATUS")
-          {
-            int panDeg = usToDeg((int)panAngle, PAN_MIN, PAN_MAX);
-            int tiltDeg = tiltUsToDeg((int)tiltAngle);
-            Serial.printf("Manual:%s | pan=%d us (%d deg) | tilt=%d us (%d deg) | step=%d\n", manualMode ? "ON" : "OFF", (int)panAngle, panDeg, (int)tiltAngle, tiltDeg, stepSize);
-          }
-          else if (verb == "READINA")
-          {
-            // readINA();
-            // Serial.printf("CH1: Bus %.3f V | Current %.3f A\n", busV0, current0);
-            // Serial.printf("CH2: Bus %.3f V | Current %.3f A\n", busV1, current1);
-            // Serial.printf("CH3: Bus %.3f V | Current %.3f A\n", busV2, current2);
-          }
-          else if (verb == "READSENS")
-          {
-            sum = L1 + L2 + L3 + L4;
-            Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f\n", L1, L2, L3, L4, sum);
-          }
-          else
-          {
-            Serial.println("Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS, READINA, READSENS");
-          }
-        }
-        buf = "";
-      }
-      else
-      {
-        buf += c;
-      }
-      vTaskDelay(10 / portTICK_PERIOD_MS);
-    }
-    vTaskDelay(50 / portTICK_PERIOD_MS);
-  }
-}
-
-void TaskMain(void *pvParameters)
+void TaskTracking(void *pvParameters)
 {
   for (;;)
   {
+    if (!manualMode)
+      tracking();
 
-    TickType_t lastWakeTime = xTaskGetTickCount();
-    while (1)
-    {
-      // kerja kamu di sini
-      // Jika manualMode aktif, kita skip updateSens (tracking otomatis dimatikan)
-      // tapi tetap panggil readSensors() supaya L1-L4 tetap ter-update
-      // dan datanya tetap fresh saat dikirim ke Blynk / dicetak ke Serial.
-      if (!manualMode)
-      {
-        updateSens();
-      }
-      else
-      {
-        readSensors();
-      }
-      vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(20));
-    }
+    vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
-
-void TaskUpdateSensors(void *pvParameters)
-{
-  for (;;)
-  {
-    // Print status ke Serial Monitor selalu berjalan, baik Manual ON maupun OFF
-    Serial.printf("CH1: Bus %.3f V | Current %.3f A | Shunt Voltage %.3f V | Power %.3f W\n", busVoltage, current, shuntVoltage, power);
-    float panDeg = map(panAngle, PAN_MIN, PAN_MAX, 0, 180);
-    float tiltDeg = map(tiltAngle, TILT_MIN, TILT_MAX, TILT_DEG_MIN, TILT_DEG_MAX);
-    Serial.printf("L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f | nx=%.3f ny=%.3f | Pan=%.1f Tilt=%.1f | Rotasi=%.1f | Kemiringan=%.1f | Manual=%s\n", L1, L2, L3, L4, sum, nx, ny, panAngle, tiltAngle, panDeg, tiltDeg, manualMode ? "ON" : "OFF");
-
-    vTaskDelay(10000 / portTICK_PERIOD_MS);
-  }
-}
-
 void setup()
 {
   Serial.begin(115200);
@@ -696,17 +777,27 @@ void setup()
   delay(100);
   u8g2.begin();
   delay(100);
-  u8g2.clearBuffer();					// clear the internal memory
-  u8g2.setFont(u8g2_font_ncenB08_tr);	// choose a suitable font
-  u8g2.drawStr(0,10,"Hello World!");	// write something to the internal memory
-  u8g2.sendBuffer(); // transfer internal memory to the display
+  u8g2.clearBuffer();                  // clear the internal memory
+  u8g2.setFont(u8g2_font_ncenB08_tr);  // choose a suitable font
+  u8g2.drawStr(0, 10, "Hello World!"); // write something to the internal memory
+  u8g2.sendBuffer();                   // transfer internal memory to the display
   delay(100);
 
+  // Buat queue dengan kapasitas 10 item, masing-masing berupa pointer char* atau String
+  serialLogQueue = xQueueCreate(10, sizeof(char[128]));
+  if (serialLogQueue == NULL)
+  {
+    Serial.println("Gagal membuat serialLogQueue!");
+  }
+
   // Cek batas bawah (putus/korslet ke GND) dan batas atas (putus/korslet ke VCC)
-  readSensors();
+  L1 = analogRead(LDR1);
+  L2 = analogRead(LDR2);
+  L3 = analogRead(LDR3);
+  L4 = analogRead(LDR4);
   bool errorBawah = (L1 <= MIN_LDR || L2 <= MIN_LDR || L3 <= MIN_LDR || L4 <= MIN_LDR);
   bool errorAtas = (L1 >= MAX_LDR || L2 >= MAX_LDR || L3 >= MAX_LDR || L4 >= MAX_LDR);
-  
+
   if (errorBawah || errorAtas)
   {
     Serial.println("Salah satu sensor bermasalah, periksa kabel!");
@@ -760,22 +851,30 @@ void setup()
   servoTilt.writeMicroseconds(tiltAngle);
 
   i2cMutex = xSemaphoreCreateMutex();
-
   if (i2cMutex == NULL)
   {
     Serial.println("Mutex gagal dibuat!");
   }
 
-  xTaskCreatePinnedToCore(TaskMqtt, "mqtt", 4096, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(TaskUpdateSensors, "sensors", 4096, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(TaskMain, "TaskMain", 4096, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(ReadString, "readString", 4096, NULL, 1, NULL, 0);
-
   /*********** BLYNK ***********/
   Serial.println("Connecting to WiFi...");
-  WiFi.begin(ssid, pass); // Manually connect to Wi-Fi
-}
+  WiFi.begin(ssid, pass); // connect to Wi-Fi
 
+  // Core 1: Khusus untuk Kendali Utama & Komunikasi Data
+  // Pindahkan tracking dan sensor cahaya ke sini agar tidak terganggu WiFi
+  xTaskCreatePinnedToCore(readLDR, "readLDR", 4096, NULL, 2, NULL, 1);
+  xTaskCreatePinnedToCore(TaskTracking, "Task Tracking", 4096, NULL, 2, NULL, 1);
+  xTaskCreatePinnedToCore(TaskMqtt, "mqtt", 4096, NULL, 1, NULL, 1);
+
+  // Core 0: Fokus ke Input Serial, Sistem, dan Sensor Lambat
+  // Berbagi beban dengan internal WiFi stack
+  xTaskCreatePinnedToCore(ReadString, "readString", 4096, NULL, 3, NULL, 0); // Priority 3 agar perintah cepat direspon
+  xTaskCreatePinnedToCore(TaskReadDS18B20, "readTemp", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(TaskOled, "Display Oled", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(checkWifi, "Check Wi-Fi", 4096, NULL, 1, NULL, 0); // Cukup Priority 1
+  // Delete "setup and loop" task
+  vTaskDelete(NULL);
+}
 void loop()
 {
 }
