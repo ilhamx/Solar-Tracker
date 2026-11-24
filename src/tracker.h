@@ -1,38 +1,27 @@
 #pragma once
+#include "ina_ldr.h"
 
-struct
+struct trackerData
 {
-    // Helper functions untuk konversi dan clamp
-    inline int clampInt(int v, int lo, int hi)
-    {
-        if (v < lo)
-            return lo;
-        if (v > hi)
-            return hi;
-        return v;
-    }
-    // Konversi derajat (0-180) ke microseconds antara minUs..maxUs
-    inline int degToUs(int deg, int minUs, int maxUs)
-    {
-        deg = clampInt(deg, 0, 180);
-        return map(deg, 0, 180, minUs, maxUs);
-    }
-    // Konversi microseconds ke derajat
-    inline int usToDeg(int us, int minUs, int maxUs)
-    {
-        us = clampInt(us, minUs, maxUs);
-        return map(us, minUs, maxUs, 0, 180);
-    }
-    inline int tiltDegToUs(int deg)
-    {
-        deg = clampInt(deg, TILT_DEG_MIN, TILT_DEG_MAX);
-        return map(deg, TILT_DEG_MIN, TILT_DEG_MAX, TILT_MIN, TILT_MAX);
-    }
-    inline int tiltUsToDeg(int us)
-    {
-        us = clampInt(us, TILT_MIN, TILT_MAX);
-        return map(us, TILT_MIN, TILT_MAX, TILT_DEG_MIN, TILT_DEG_MAX);
-    }
+    float errX, errY;
+    float sum, nx, ny; // for fusion calculations
+    /*********** CONTROL ***********/
+    float Kp_X = 7.0f; // adjust as needed
+    float Kp_Y = 5.0f; // adjust as needed
+    float deadzone = 0.08;
+    unsigned long lastUpdate = 0;
+    bool ledStatus = false, isWifiConnected = false;
+    int stepSize = 1;  // kecepatan gerak (semakin kecil = semakin halus)
+    int deadband = 10; // toleransi biar gak jitter
+    float yaw0 = 0;
+    float currentYaw = 0;
+    int currentPan = 600;   // posisi awal servo (microseconds)
+    int currentTilt = 1500; // posisi awal servo (microseconds)
+
+    float L1_kalman, L2_kalman, L3_kalman, L4_kalman; // kalman-filtered light levels
+    float panAngle = 1500;
+    float tiltAngle = 1500;
+
     inline float kalmanUpdate(float measurement)
     {
         float x = 0;    // estimate
@@ -76,43 +65,9 @@ struct
 
         servoPan.writeMicroseconds(currentPan);
     }
-    void tracking()
+    void protection()
     {
-        if (sum < 50) // night protection
-        {
-            return;
-        }
-
-        /*********** FUSION **********
-         * Calculate normalized error in X and Y directions based on light levels
-         * The idea is to find the imbalance in light intensity across the sensors
-         */
-        float errX = (L1 + L2) - (L3 + L4);
-        float errY = (L1 + L3) - (L2 + L4);
-
-        if (tiltAngle > 1500)
-            nx = errX / sum;
-        else
-            nx = -errX / sum;
-        ny = errY / sum;
-
-        if (abs(nx) < deadzone)
-            nx = 0;
-        if (abs(ny) < deadzone)
-            ny = 0;
-
-        /*********** CONTROL ***********/
-        Kp_X = 7; // adjust as needed
-        Kp_Y = 5; // adjust as needed
-
-        panAngle += nx * Kp_X;
-        tiltAngle += ny * Kp_Y;
-
-        panAngle = constrain(panAngle, PAN_MIN, PAN_MAX);
-        tiltAngle = constrain(tiltAngle, TILT_MIN, TILT_MAX);
-
         static int panMinCounter = 0;
-
         if (panAngle <= PAN_MIN)
         {
             panMinCounter++;
@@ -168,7 +123,39 @@ struct
         {
             panMaxCounter = 0;
         }
+    }
+    void tracking()
+    {
+        if (sum < 50) // night protection
+        {
+            return;
+        }
 
+        /*********** FUSION **********
+         * Calculate normalized error in X and Y directions based on light levels
+         * The idea is to find the imbalance in light intensity across the sensors
+         */
+        errX = (sensor.L1 + sensor.L2) - (sensor.L3 + sensor.L4);
+        errY = (sensor.L1 + sensor.L3) - (sensor.L2 + sensor.L4);
+
+        if (tiltAngle > 1500)
+            nx = errX / sum;
+        else
+            nx = -errX / sum;
+        ny = errY / sum;
+
+        if (abs(nx) < deadzone)
+            nx = 0;
+        if (abs(ny) < deadzone)
+            ny = 0;
+
+        panAngle += nx * Kp_X;
+        tiltAngle += ny * Kp_Y;
+
+        panAngle = constrain(panAngle, PAN_MIN, PAN_MAX);
+        tiltAngle = constrain(tiltAngle, TILT_MIN, TILT_MAX);
+
+        protection();
         servoPan.writeMicroseconds(panAngle);
         servoTilt.writeMicroseconds(tiltAngle);
     }

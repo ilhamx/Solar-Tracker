@@ -1,7 +1,9 @@
 #pragma once
+#include "ina_ldr.h"
 #include <WebSocketsClient.h>
 #include <MQTTPubSubClient.h>
-void executeCommand(String cmd);
+extern void executeCommand(String cmd);
+
 // ========================================
 // WIFI
 // ========================================
@@ -25,12 +27,6 @@ const char *CLIENT_ID = "ESP32_SOLAR_TRACKER";
 const char *TOPIC_PUB = "solar/tracker/data";
 const char *TOPIC_SUB = "solar/tracker/control";
 const char *TOPIC_STATUS = "solar/tracker/status";
-const char *topic_pub_ina = "tracker/sensor/ina226";
-const char *topic_pub_ldr = "tracker/sensor/ldr";
-const char *topic_pub_servo = "tracker/servo/status";
-const char *topic_pub_temp = "tracker/sensor/temperature";
-const char *topic_pub_log = "tracker/log/serial";
-const char *topic_sub = "tracker/perintah";
 // ========================================
 // CLIENT
 // ========================================
@@ -89,9 +85,14 @@ void publish()
     i++;
     // sprintf(buffer, "ONLINE ke %d", i);
     // mqtt.publish("solar/tracker/status", buffer);
+    mqtt.publish("solar/ldr/l1", String(sensor.L1));
+    mqtt.publish("solar/ldr/l2", String(sensor.L2));
+    mqtt.publish("solar/ldr/l3", String(sensor.L3));
+    mqtt.publish("solar/ldr/l4", String(sensor.L4));
+    mqtt.publish("solar/temp/t1", String(sensor.tempC));
     mqtt.publish("solar/tracker/voltage", String(voltage));
     mqtt.publish("solar/tracker/ampere", String(ampere));
-    logInfo("berhasil kirim data");
+    // logInfo("berhasil kirim data");
 }
 // ========================================
 // MQTT CALLBACK
@@ -166,7 +167,7 @@ void connectMQTT()
 
         mqtt.publish(
             TOPIC_STATUS,
-            "ONLINE");
+            "[INFO] SOLAR TRACKER IS ONLINE");
 
         wasConnected = true;
     }

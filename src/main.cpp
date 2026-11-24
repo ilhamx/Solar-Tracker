@@ -2,8 +2,8 @@
 #include "utils.h"
 #include "mqtt.h"
 #include "oled.h"
-#include "tracker.h"
 #include "ina_ldr.h"
+#include "tracker.h"
 
 void connectWiFi()
 {
@@ -61,17 +61,17 @@ void executeCommand(String cmd)
       int deg = arg.toInt();
       if (verb == "PAN")
       {
-        int us = tracker.degToUs(deg, PAN_MIN, PAN_MAX);
-        panAngle = us;
-        servoPan.writeMicroseconds(tracker.clampInt(us, PAN_MIN, PAN_MAX));
+        int us = degToUs(deg, PAN_MIN, PAN_MAX);
+        tracker.panAngle = us;
+        servoPan.writeMicroseconds(clampInt(us, PAN_MIN, PAN_MAX));
         String msg = "PAN set: " + String(deg) + " deg -> " + String(us) + " us";
         logInfo(msg);
       }
       else
       {
-        int us = tracker.tiltDegToUs(deg);
-        tiltAngle = us;
-        servoTilt.writeMicroseconds(tracker.clampInt(us, TILT_MIN, TILT_MAX));
+        int us = tiltDegToUs(deg);
+        tracker.tiltAngle = us;
+        servoTilt.writeMicroseconds(clampInt(us, TILT_MIN, TILT_MAX));
         String msg = "TILT set: " + String(deg) + " deg -> " + String(us) + " us";
         logInfo(msg);
       }
@@ -89,16 +89,16 @@ void executeCommand(String cmd)
       int us = arg.toInt();
       if (verb == "PAN_US")
       {
-        us = tracker.clampInt(us, PAN_MIN, PAN_MAX);
-        panAngle = us;
+        us = clampInt(us, PAN_MIN, PAN_MAX);
+        tracker.panAngle = us;
         servoPan.writeMicroseconds(us);
         String msg = "PAN_US set: " + String(us) + " us";
         logInfo(msg);
       }
       else
       {
-        us = tracker.clampInt(us, TILT_MIN, TILT_MAX);
-        tiltAngle = us;
+        us = clampInt(us, TILT_MIN, TILT_MAX);
+        tracker.tiltAngle = us;
         servoTilt.writeMicroseconds(us);
         String msg = "TILT_US set: " + String(us) + " us";
         logInfo(msg);
@@ -117,20 +117,20 @@ void executeCommand(String cmd)
       int d = arg.toInt();
       if (verb == "PAN_DELTA")
       {
-        int curDeg = tracker.usToDeg((int)panAngle, PAN_MIN, PAN_MAX);
-        int nd = tracker.clampInt(curDeg + d, 0, 180);
-        int us = tracker.degToUs(nd, PAN_MIN, PAN_MAX);
-        panAngle = us;
+        int curDeg = usToDeg((int)tracker.panAngle, PAN_MIN, PAN_MAX);
+        int nd = clampInt(curDeg + d, 0, 180);
+        int us = degToUs(nd, PAN_MIN, PAN_MAX);
+        tracker.panAngle = us;
         servoPan.writeMicroseconds(us);
         String msg = "PAN_DELTA: now " + String(nd) + " deg -> " + String(us) + " us";
         logInfo(msg);
       }
       else
       {
-        int curDeg = tracker.tiltUsToDeg((int)tiltAngle);
-        int nd = tracker.clampInt(curDeg + d, TILT_DEG_MIN, TILT_DEG_MAX);
-        int us = tracker.tiltDegToUs(nd);
-        tiltAngle = us;
+        int curDeg = tiltUsToDeg((int)tracker.tiltAngle);
+        int nd = clampInt(curDeg + d, TILT_DEG_MIN, TILT_DEG_MAX);
+        int us = tiltDegToUs(nd);
+        tracker.tiltAngle = us;
         servoTilt.writeMicroseconds(us);
         String msg = "TILT_DELTA: now " + String(nd) + " deg -> " + String(us) + " us";
         logInfo(msg);
@@ -141,7 +141,7 @@ void executeCommand(String cmd)
   {
     if (arg.length() == 0)
     {
-      String msg = "Current stepSize: " + String(stepSize);
+      String msg = "Current stepSize: " + String(tracker.stepSize);
       logInfo(msg);
     }
     else
@@ -154,43 +154,39 @@ void executeCommand(String cmd)
       }
       else
       {
-        stepSize = s;
-        String msg = "stepSize set to " + String(stepSize);
+        tracker.stepSize = s;
+        String msg = "stepSize set to " + String(tracker.stepSize);
         logInfo(msg);
       }
     }
   }
   else if (verb == "HOME")
   {
-    panAngle = (PAN_MIN + PAN_MAX) / 2;    // 1500 us
-    tiltAngle = (TILT_MIN + TILT_MAX) / 2; // 1300 us
-    servoPan.writeMicroseconds((int)panAngle);
-    servoTilt.writeMicroseconds((int)tiltAngle);
-    String msg = "Homing: pan -> " + String((int)panAngle) + " us | tilt -> " + String((int)tiltAngle) + " us";
+    tracker.panAngle = (PAN_MIN + PAN_MAX) / 2;    // 1500 us
+    tracker.tiltAngle = (TILT_MIN + TILT_MAX) / 2; // 1300 us
+    servoPan.writeMicroseconds((int)tracker.panAngle);
+    servoTilt.writeMicroseconds((int)tracker.tiltAngle);
+    String msg = "Homing: pan -> " + String((int)tracker.panAngle) + " us | tilt -> " + String((int)tracker.tiltAngle) + " us";
     logInfo(msg);
   }
   else if (verb == "STATUS")
   {
-    int panDeg = tracker.usToDeg((int)panAngle, PAN_MIN, PAN_MAX);
-    int tiltDeg = tracker.tiltUsToDeg((int)tiltAngle);
+    int panDeg = usToDeg((int)tracker.panAngle, PAN_MIN, PAN_MAX);
+    int tiltDeg = tiltUsToDeg((int)tracker.tiltAngle);
     char buf[128];
     snprintf(buf, sizeof(buf), "Manual:%s | pan=%d us (%d deg) | tilt=%d us (%d deg) | step=%d",
-             manualMode ? "ON" : "OFF", (int)panAngle, panDeg, (int)tiltAngle, tiltDeg, stepSize);
+             manualMode ? "ON" : "OFF", (int)tracker.panAngle, panDeg, (int)tracker.tiltAngle, tiltDeg, tracker.stepSize);
     logInfo(buf);
   }
-  else if (verb == "READINA")
-  {
-    sensor.readINA();
-  }
-  else if (verb == "READSENS")
+  else if (verb == "SENSOR")
   {
     char buf[128];
-    snprintf(buf, sizeof(buf), "L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f\n", L1, L2, L3, L4, sum);
+    snprintf(buf, sizeof(buf), "L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f\n", sensor.L1, sensor.L2, sensor.L3, sensor.L4, sensor.sum);
     logInfo(buf);
   }
   else
   {
-    logWarning("Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS, READINA, READSENS");
+    logWarning("Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS, SENSOR");
   }
 }
 void ReadString(void *pvParameters)
@@ -241,10 +237,11 @@ void TaskReadDS18B20(void *pvParameters)
     else
     {
       // Tahap B: Ambil hasil suhunya (karena sudah lewat 1 detik dari perintah sebelumnya)
-      tempC = ds18b20.getTempCByIndex(0);
+      sensor.tempC = ds18b20.getTempCByIndex(0);
 
       // Lakukan sesuatu dengan nilai tempC (simpan ke variabel global, dll)
-
+      // String msg = "Suhu sudah diambil"
+      // logInfo("suhu sudah diambil");
       // Mulai siklus konversi berikutnya
       ds18b20.requestTemperatures();
     }
@@ -293,10 +290,13 @@ void taskOled(void *pvParameters)
 }
 void TaskTracking(void *pvParameters)
 {
+
   for (;;)
   {
     if (!manualMode)
-      tracker.tracking();
+      return;
+
+    tracker.tracking();
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
@@ -328,8 +328,8 @@ void setup()
   servoTilt.setPeriodHertz(200);
   servoPan.attach(PAN_PIN);
   servoTilt.attach(TILT_PIN);
-  servoPan.writeMicroseconds(panAngle);
-  servoTilt.writeMicroseconds(tiltAngle);
+  servoPan.writeMicroseconds(tracker.panAngle);
+  servoTilt.writeMicroseconds(tracker.tiltAngle);
 
   i2cMutex = xSemaphoreCreateMutex();
   if (i2cMutex == NULL)
@@ -337,25 +337,24 @@ void setup()
     Serial.println("Mutex gagal dibuat!");
   }
 
-  /*********** BLYNK ***********/
+  /*********** MQTT ***********/
   Serial.println("Mencoba menyambung ke WiFi...");
   WiFi.setAutoReconnect(true);
   connectWiFi();
   setupMQTT();
   // Core 1: Khusus untuk Kendali Utama & Komunikasi Data
   // Pindahkan tracking dan sensor cahaya ke sini agar tidak terganggu WiFi
-  // xTaskCreatePinnedToCore(taskSensor, "Task Sensor", 4096, NULL, 2, NULL, 1);
-  // xTaskCreatePinnedToCore(TaskTracking, "Task Tracking", 4096, NULL, 2, NULL, 1);
-  xTaskCreatePinnedToCore(TaskMqtt, "mqtt", 8096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(taskSensor, "Task Sensor", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(TaskTracking, "Task Tracking", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(TaskMqtt, "mqtt", 8096, NULL, 2, NULL, 1);
 
   // Core 0: Fokus ke Input Serial, Sistem, dan Sensor Lambat
   // Berbagi beban dengan internal WiFi stack
-  // xTaskCreatePinnedToCore(ReadString, "readString", 4096, NULL, 3, NULL, 0); // Priority 3 agar perintah cepat direspon
-  // xTaskCreatePinnedToCore(TaskReadDS18B20, "readTemp", 4096, NULL, 1, NULL, 0);
-  // xTaskCreatePinnedToCore(taskOled, "Display Oled", 4096, NULL, 1, NULL, 0);
-  // xTaskCreatePinnedToCore(handleWifi, "Check Wi-Fi", 8096, NULL, 2, NULL, 1); // Cukup Priority 1
+  xTaskCreatePinnedToCore(ReadString, "readString", 4096, NULL, 1, NULL, 0); // Priority 3 agar perintah cepat direspon
+  xTaskCreatePinnedToCore(TaskReadDS18B20, "readTemp", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(taskOled, "Display Oled", 8000, NULL, 1, NULL, 0);
   // Delete "setup and loop" task
-  // vTaskDelete(NULL);
+  vTaskDelete(NULL);
 }
 void loop()
 {

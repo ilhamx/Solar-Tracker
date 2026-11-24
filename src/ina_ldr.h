@@ -1,7 +1,30 @@
 #pragma once
+#include "tracker.h"
 
-struct
+struct sensorData
 {
+    uint16_t L1, L2, L3, L4, sum;
+    float tempC; // light levels from 4 sensors
+    float busVoltage, shuntVoltage, current, power;
+    
+    float kalmanUpdate(float measurement, uint8_t index)
+    {
+        const float Q = 0.01;
+        const float R = 1.0;
+        
+        static float x[4] = {0, 0, 0, 0};
+        static float P[4] = {1, 1, 1, 1};
+
+        P[index] += Q;
+
+        float K = P[index] / (P[index] + R);
+
+        x[index] += K * (measurement - x[index]);
+
+        P[index] *= (1 - K);
+
+        return x[index];
+    }
     void readINA()
     {
         if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
@@ -45,15 +68,12 @@ struct
     }
     void readLDR()
     {
-        L1 = analogRead(LDR1);
-        L2 = analogRead(LDR2);
-        L3 = analogRead(LDR3);
-        L4 = analogRead(LDR4);
-
-        L1 = tracker.kalmanUpdate(L1);
-        L2 = tracker.kalmanUpdate(L2);
-        L3 = tracker.kalmanUpdate(L3);
-        L4 = tracker.kalmanUpdate(L4);
-        sum = L1 + L2 + L3 + L4 + 0.001;
+        L1 = kalmanUpdate(analogRead(LDR1), 0);
+        L2 = kalmanUpdate(analogRead(LDR2), 1);
+        L3 = kalmanUpdate(analogRead(LDR3), 2);
+        L4 = kalmanUpdate(analogRead(LDR4), 3);
+        sum = L1 + L2 + L3 + L4;
     }
-} sensor;
+};
+
+extern sensorData sensor;

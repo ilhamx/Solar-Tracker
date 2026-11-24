@@ -36,15 +36,16 @@ DallasTemperature ds18b20(&oneWire);
 
 // Create an INA3221 object
 INA226 INA(0x40);
-
+// Queue handle untuk menampung string log (kapasitas 10 antrian)
+QueueHandle_t serialLogQueue;
 
 // char ssid[] = "ppk";
 // char pass[] = "11111111";
 // char ssid[] = "LPG_3KG";
 // char pass[] = "piulbaikhati";
 
-const char* ssid = "LPG_3KG";
-const char* pass = "piulbaikhati";
+const char *ssid = "LPG_3KG";
+const char *pass = "piulbaikhati";
 
 // Pin Sensor LDR 1-4
 #define LDR1 35
@@ -60,33 +61,6 @@ const char* pass = "piulbaikhati";
 #define LED_STATUS 15
 
 /*********** TRACKER PARAM ***********/
-
-// Queue handle untuk menampung string log (kapasitas 10 antrian)
-QueueHandle_t serialLogQueue;
-float Kp_X; // pan is more sensitive to error, so we use a larger Kp
-float Kp_Y; // tilt is less sensitive to error, so we use a smaller Kp
-float deadzone = 0.08;
-unsigned long lastUpdate = 0;
-
-int stepSize = 1;  // kecepatan gerak (semakin kecil = semakin halus)
-int deadband = 10; // toleransi biar gak jitter
-
-bool ledStatus = false, isWifiConnected = false;
-float yaw0 = 0;
-float currentYaw = 0;
-int currentPan = 600;        // posisi awal servo (microseconds)
-int currentTilt = 1500;      // posisi awal servo (microseconds)
-float L1, L2, L3, L4, tempC; // light levels from 4 sensors
-float busVoltage, shuntVoltage, current, power;
-float sum, nx, ny;                                // for fusion calculations
-float L1_kalman, L2_kalman, L3_kalman, L4_kalman; // kalman-filtered light levels
-
-#define YAW_LIMIT 160 // max rotation from start (degrees)
-
-/*********** SERVO ***********/
-Servo servoPan;
-Servo servoTilt;
-
 #define PAN_PIN 17
 #define TILT_PIN 16
 
@@ -100,11 +74,45 @@ Servo servoTilt;
 #define TILT_DEG_MIN 45
 #define TILT_DEG_MAX 135
 
-float panAngle = 1500;
-float tiltAngle = 1500;
+/*********** SERVO ***********/
+Servo servoPan;
+Servo servoTilt;
+
+#define YAW_LIMIT 160 // max rotation from start (degrees)
 
 // Manual control flag: when true, automatic tracking (updateSens) is paused
 volatile bool manualMode = false;
 
 bool isMqttConnected = false;
 
+// Helper functions untuk konversi dan clamp
+inline int clampInt(int v, int lo, int hi)
+{
+    if (v < lo)
+        return lo;
+    if (v > hi)
+        return hi;
+    return v;
+}
+// Konversi derajat (0-180) ke microseconds antara minUs..maxUs
+inline int degToUs(int deg, int minUs, int maxUs)
+{
+    deg = clampInt(deg, 0, 180);
+    return map(deg, 0, 180, minUs, maxUs);
+}
+// Konversi microseconds ke derajat
+inline int usToDeg(int us, int minUs, int maxUs)
+{
+    us = clampInt(us, minUs, maxUs);
+    return map(us, minUs, maxUs, 0, 180);
+}
+inline int tiltDegToUs(int deg)
+{
+    deg = clampInt(deg, TILT_DEG_MIN, TILT_DEG_MAX);
+    return map(deg, TILT_DEG_MIN, TILT_DEG_MAX, TILT_MIN, TILT_MAX);
+}
+inline int tiltUsToDeg(int us)
+{
+    us = clampInt(us, TILT_MIN, TILT_MAX);
+    return map(us, TILT_MIN, TILT_MAX, TILT_DEG_MIN, TILT_DEG_MAX);
+}
