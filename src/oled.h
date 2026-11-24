@@ -103,17 +103,4 @@ struct
         bootscreen();
         delay(100);
     }
-    static void loop(void *pvParameters)
-    {
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        for (;;)
-        {
-            if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
-            {
-                drawSolar();
-                xSemaphoreGive(i2cMutex); // UNLOCK
-            }
-            vTaskDelay(pdMS_TO_TICKS(200));
-        }
-    }
 } oled;

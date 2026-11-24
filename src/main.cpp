@@ -58,14 +58,15 @@ void mqtt_app_start(bool isLocal)
   if (!isLocal)
   { // internet
     // Alamat lengkap beserta path WebSocket (/mqtt atau /ws tergantung broker)
+    esp_mqtt_client_config_t mqtt_cfg = {};
     mqtt_cfg.uri = mqtt_broker_uri;
-
+    mqtt_cfg.cert_pem = emqx_root_ca;
     // Verifikasi sertifikat SSL menggunakan bundle CA bawaan ESP32
     mqtt_cfg.use_global_ca_store = true;
 
     // Opsional: Jika broker membutuhkan username & password
-    mqtt_cfg.username = "iot";
-    mqtt_cfg.password = "iot123";
+    // mqtt_cfg.username = "iot";
+    // mqtt_cfg.password = "iot123";
   }
   else
   { // local
@@ -73,8 +74,11 @@ void mqtt_app_start(bool isLocal)
   }
 
   client = esp_mqtt_client_init(&mqtt_cfg);
+  Serial.println("1");
   esp_mqtt_client_register_event(client, (esp_mqtt_event_id_t)ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+  Serial.println("2");
   esp_mqtt_client_start(client);
+  Serial.println("3");
 }
 // Fungsi helper agar mudah digunakan di mana saja
 void publishLogToMqtt(String message)
@@ -87,55 +91,80 @@ void publishLogToMqtt(String message)
     xQueueSend(serialLogQueue, &buffer, 0);
   }
 }
-void checkWifi(void *pvParameters)
+void handleWifi(void *pvParameters)
 {
-  unsigned long timestart = millis();
-  bool hasrun = false;
+  unsigned long lastRetryTime = 0;
+  const unsigned long retryInterval = 10000; // Retry every 10 seconds
+
   for (;;)
   {
-    unsigned long now = millis();
     if (WiFi.status() == WL_CONNECTED)
     {
-      timestart = millis(); // reset waktu ketika wifi konek
-      isWifiConnected = true;
       digitalWrite(LED_WIFI, HIGH);
-      if (!hasrun)
-      {
-        // Mulai klien MQTT WSS
-        mqtt_app_start(false);
-        hasrun = true;
-      }
-    }
-    else
-    {
-      isWifiConnected = false;
-      static bool blinking = false;
-      if (blinking)
-        digitalWrite(LED_WIFI, LOW);
-      else
-        digitalWrite(LED_WIFI, HIGH);
-      blinking = !blinking;
+      // return; // Connected; do nothing
     }
 
-    static bool hasrun1 = false;
-    if (now - timestart >= 15000 && !hasrun1)
-    {
-      WiFi.disconnect(true);
-      vTaskDelay(pdMS_TO_TICKS(500));
-      // 2. Ubah mode sepenuhnya ke AP
-      WiFi.mode(WIFI_AP);
-
-      // 3. Jalankan AP
-      WiFi.softAP("ESP32_Access_Point", "password123");
-
-      Serial.print("Berhasil beralih ke AP Mode! IP: ");
-      Serial.println(WiFi.softAPIP());
-      mqtt_app_start(true);
-      hasrun1 = true;
-    }
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
+// void checkWifi(void *pvParameters)
+// {
+//   for (;;)
+//   {
+
+//     // if (WiFi.status() != WL_CONNECTED)
+//     // {
+//     //   timestart = millis(); // reset waktu ketika wifi konek
+//     //   isWifiConnected = true;
+//     //   digitalWrite(LED_WIFI, HIGH);
+//     //   Serial.println("Wifi Connected...");
+//     // }
+//     // else
+//     // {
+//     //   isWifiConnected = false;
+//     //   static bool blinking = false;
+//     //   Serial.print("..");
+//     //   if (blinking)
+//     //     digitalWrite(LED_WIFI, LOW);
+//     //   else
+//     //     digitalWrite(LED_WIFI, HIGH);
+//     //   blinking = !blinking;
+//     // }
+//     // static bool hasrun1 = false;
+//     // if (now - timestart >= 30000 && !hasrun1)
+//     // {
+//     //   WiFi.disconnect(true);
+//     //   vTaskDelay(pdMS_TO_TICKS(500));
+//     //   // 2. Ubah mode sepenuhnya ke AP
+//     //   WiFi.mode(WIFI_AP);
+//     //   // 3. Jalankan AP
+//     //   WiFi.softAP("ESP32_Access_Point", "password123");
+//     //   Serial.print("Berhasil beralih ke AP Mode! IP: ");
+//     //   Serial.println(WiFi.softAPIP());
+//     //   mqtt_app_start(true);
+//     //   hasrun1 = true;
+//     // }
+
+//     static bool step1 = false, step2 = false;
+//     // if (WiFi.isConnected() == true && !step2)
+//     // {
+//     //   // Mulai klien MQTT WSS
+//     //   Serial.println("Memulai mqtt...");
+//     //   // mqtt_app_start(false);
+//     //   step2 = true;
+//     // }
+//     if (step1)
+//       return;
+
+//     /*********** BLYNK ***********/
+//     // Serial.println("Mencoba menyambung ke WiFi...");
+//     // WiFi.disconnect();
+//     // WiFi.mode(WIFI_STA);
+//     // WiFi.begin(ssid, pass); // connect to Wi-Fi
+//     step1 = true;
+//     vTaskDelay(1000 / portTICK_PERIOD_MS);
+//   }
+// }
 void executeCommand(String cmd)
 {
   cmd.toUpperCase();
@@ -327,38 +356,6 @@ void executeCommand(String cmd)
     publishLogToMqtt("Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS, READINA, READSENS");
   }
 }
-void TaskReadDS18B20(void *pvParameters)
-{
-  TickType_t xLastWakeTime = xTaskGetTickCount();
-  // Kita set task ini berjalan setiap 1 detik sekali (1000 ms)
-  const TickType_t xFrequency = pdMS_TO_TICKS(1000);
-
-  bool conversionStarted = false;
-
-  for (;;)
-  {
-    if (!conversionStarted)
-    {
-      // Tahap A: Perintahkan sensor mulai konversi suhu (tanpa menunggu/async)
-      sensors.setWaitForConversion(false); // PENTING: Set false agar tidak blocking
-      sensors.requestTemperatures();
-      conversionStarted = true;
-    }
-    else
-    {
-      // Tahap B: Ambil hasil suhunya (karena sudah lewat 1 detik dari perintah sebelumnya)
-      tempC = sensors.getTempCByIndex(0);
-
-      // Lakukan sesuatu dengan nilai tempC (simpan ke variabel global, dll)
-
-      // Mulai siklus konversi berikutnya
-      sensors.requestTemperatures();
-    }
-
-    // Task tidur tenang selama 1 detik tanpa membebani CPU
-    vTaskDelayUntil(&xLastWakeTime, xFrequency);
-  }
-}
 void ReadString(void *pvParameters)
 {
   String buf;
@@ -387,11 +384,57 @@ void ReadString(void *pvParameters)
     vTaskDelay(50 / portTICK_PERIOD_MS);
   }
 }
+void TaskReadDS18B20(void *pvParameters)
+{
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  // Kita set task ini berjalan setiap 1 detik sekali (1000 ms)
+  const TickType_t xFrequency = pdMS_TO_TICKS(1000);
+
+  bool conversionStarted = false;
+
+  for (;;)
+  {
+    if (!conversionStarted)
+    {
+      // Tahap A: Perintahkan sensor mulai konversi suhu (tanpa menunggu/async)
+      ds18b20.setWaitForConversion(false); // PENTING: Set false agar tidak blocking
+      ds18b20.requestTemperatures();
+      conversionStarted = true;
+    }
+    else
+    {
+      // Tahap B: Ambil hasil suhunya (karena sudah lewat 1 detik dari perintah sebelumnya)
+      tempC = ds18b20.getTempCByIndex(0);
+
+      // Lakukan sesuatu dengan nilai tempC (simpan ke variabel global, dll)
+
+      // Mulai siklus konversi berikutnya
+      ds18b20.requestTemperatures();
+    }
+
+    // Task tidur tenang selama 1 detik tanpa membebani CPU
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+  }
+}
+
 void TaskMqtt(void *pvParameters)
 {
   char receivedLog[128];
+  static bool hasrun = false;
   for (;;)
   {
+    Serial.println("task mqtt");
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      Serial.println("connected");
+      
+      if (!hasrun){
+        mqtt_app_start(false);
+        hasrun = true;
+        Serial.println("mqtt started");
+      }
+      // return; // Connected; do nothing
+    }
     if (isMqttConnected && (millis() - lastPublish > 1000))
     {
       lastPublish = millis();
@@ -439,13 +482,39 @@ void TaskMqtt(void *pvParameters)
     vTaskDelay(500 / portTICK_PERIOD_MS);
   }
 }
+void taskSensor(void *pvParameters)
+{
+  vTaskDelay(pdMS_TO_TICKS(2000));
+  for (;;)
+  {
+    sensor.readLDR();
+    if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
+    {
+      sensor.readINA();
+      xSemaphoreGive(i2cMutex); // UNLOCK
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+}
+void taskOled(void *pvParameters)
+{
+  vTaskDelay(pdMS_TO_TICKS(2000));
+  for (;;)
+  {
+    if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
+    {
+      oled.drawSolar();
+      xSemaphoreGive(i2cMutex); // UNLOCK
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+}
 void TaskTracking(void *pvParameters)
 {
   for (;;)
   {
     if (!manualMode)
       tracker.tracking();
-
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
@@ -463,51 +532,6 @@ void setup()
   if (serialLogQueue == NULL)
   {
     Serial.println("Gagal membuat serialLogQueue!");
-  }
-
-  // Cek batas bawah (putus/korslet ke GND) dan batas atas (putus/korslet ke VCC)
-  L1 = analogRead(LDR1);
-  L2 = analogRead(LDR2);
-  L3 = analogRead(LDR3);
-  L4 = analogRead(LDR4);
-  bool errorBawah = (L1 <= MIN_LDR || L2 <= MIN_LDR || L3 <= MIN_LDR || L4 <= MIN_LDR);
-  bool errorAtas = (L1 >= MAX_LDR || L2 >= MAX_LDR || L3 >= MAX_LDR || L4 >= MAX_LDR);
-
-  if (errorBawah || errorAtas)
-  {
-    Serial.println("Salah satu sensor bermasalah, periksa kabel!");
-    while (1)
-    { // Error Sensor dua kali kedip
-      digitalWrite(LED_STATUS, HIGH);
-      delay(100);
-      digitalWrite(LED_STATUS, LOW);
-      delay(100);
-      digitalWrite(LED_STATUS, HIGH);
-      delay(100);
-      digitalWrite(LED_STATUS, LOW);
-      delay(1000);
-    }
-  }
-
-  // Inisialisasi sensor INA226
-  if (!INA.begin())
-  {
-    Serial.println("Gagal mendeteksi sensor INA226! Periksa kabel.");
-    while (1) // Error INA226 tiga kali kedip
-    {
-      digitalWrite(LED_STATUS, HIGH);
-      delay(100);
-      digitalWrite(LED_STATUS, LOW);
-      delay(100);
-      digitalWrite(LED_STATUS, HIGH);
-      delay(100);
-      digitalWrite(LED_STATUS, LOW);
-      delay(100);
-      digitalWrite(LED_STATUS, HIGH);
-      delay(100);
-      digitalWrite(LED_STATUS, LOW);
-      delay(1000);
-    }
   }
 
   // Kalibrasi arus maksimal (misal: 10 Ampere) dan nilai resistor shunt (misal: 0.1 Ohm)
@@ -532,23 +556,25 @@ void setup()
   }
 
   /*********** BLYNK ***********/
-  Serial.println("Connecting to WiFi...");
+  Serial.println("Mencoba menyambung ke WiFi...");
+  WiFi.setAutoReconnect(true);
+  // WiFi.mode(WIFI_STA);
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, pass); // connect to Wi-Fi
-
   // Core 1: Khusus untuk Kendali Utama & Komunikasi Data
   // Pindahkan tracking dan sensor cahaya ke sini agar tidak terganggu WiFi
-  xTaskCreatePinnedToCore(sensor.readLDR, "readLDR", 4096, NULL, 2, NULL, 1);
-  xTaskCreatePinnedToCore(TaskTracking, "Task Tracking", 4096, NULL, 2, NULL, 1);
-  xTaskCreatePinnedToCore(TaskMqtt, "mqtt", 4096, NULL, 1, NULL, 1);
+  // xTaskCreatePinnedToCore(taskSensor, "Task Sensor", 4096, NULL, 2, NULL, 1);
+  // xTaskCreatePinnedToCore(TaskTracking, "Task Tracking", 4096, NULL, 2, NULL, 1);
+  xTaskCreatePinnedToCore(TaskMqtt, "mqtt", 32000, NULL, 1, NULL, 1);
 
   // Core 0: Fokus ke Input Serial, Sistem, dan Sensor Lambat
   // Berbagi beban dengan internal WiFi stack
-  xTaskCreatePinnedToCore(ReadString, "readString", 4096, NULL, 3, NULL, 0); // Priority 3 agar perintah cepat direspon
-  xTaskCreatePinnedToCore(TaskReadDS18B20, "readTemp", 4096, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(oled.loop, "Display Oled", 4096, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(checkWifi, "Check Wi-Fi", 4096, NULL, 1, NULL, 0); // Cukup Priority 1
+  // xTaskCreatePinnedToCore(ReadString, "readString", 4096, NULL, 3, NULL, 0); // Priority 3 agar perintah cepat direspon
+  // xTaskCreatePinnedToCore(TaskReadDS18B20, "readTemp", 4096, NULL, 1, NULL, 0);
+  // xTaskCreatePinnedToCore(taskOled, "Display Oled", 4096, NULL, 1, NULL, 0);
+  // xTaskCreatePinnedToCore(handleWifi, "Check Wi-Fi", 8096, NULL, 2, NULL, 1); // Cukup Priority 1
   // Delete "setup and loop" task
-  vTaskDelete(NULL);
+  // vTaskDelete(NULL);
 }
 void loop()
 {

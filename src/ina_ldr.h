@@ -20,21 +20,40 @@ struct
             xSemaphoreGive(i2cMutex); // UNLOCK
         }
     }
-    static void readLDR(void *pvParameters)
+    inline void begin()
     {
-        for (;;)
+        // Inisialisasi sensor INA226
+        if (!INA.begin())
         {
-            L1 = analogRead(LDR1);
-            L2 = analogRead(LDR2);
-            L3 = analogRead(LDR3);
-            L4 = analogRead(LDR4);
-
-            L1 = tracker.kalmanUpdate(L1);
-            L2 = tracker.kalmanUpdate(L2);
-            L3 = tracker.kalmanUpdate(L3);
-            L4 = tracker.kalmanUpdate(L4);
-            sum = L1 + L2 + L3 + L4 + 0.001;
-            vTaskDelay(pdMS_TO_TICKS(50));
+            Serial.println("Gagal mendeteksi sensor INA226! Periksa kabel.");
+            while (1) // Error INA226 tiga kali kedip
+            {
+                digitalWrite(LED_STATUS, HIGH);
+                delay(100);
+                digitalWrite(LED_STATUS, LOW);
+                delay(100);
+                digitalWrite(LED_STATUS, HIGH);
+                delay(100);
+                digitalWrite(LED_STATUS, LOW);
+                delay(100);
+                digitalWrite(LED_STATUS, HIGH);
+                delay(100);
+                digitalWrite(LED_STATUS, LOW);
+                delay(1000);
+            }
         }
+    }
+    void readLDR()
+    {
+        L1 = analogRead(LDR1);
+        L2 = analogRead(LDR2);
+        L3 = analogRead(LDR3);
+        L4 = analogRead(LDR4);
+
+        L1 = tracker.kalmanUpdate(L1);
+        L2 = tracker.kalmanUpdate(L2);
+        L3 = tracker.kalmanUpdate(L3);
+        L4 = tracker.kalmanUpdate(L4);
+        sum = L1 + L2 + L3 + L4 + 0.001;
     }
 } sensor;

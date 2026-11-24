@@ -3,7 +3,7 @@
 struct
 {
     // Helper functions untuk konversi dan clamp
-    int clampInt(int v, int lo, int hi)
+    inline int clampInt(int v, int lo, int hi)
     {
         if (v < lo)
             return lo;
@@ -12,28 +12,28 @@ struct
         return v;
     }
     // Konversi derajat (0-180) ke microseconds antara minUs..maxUs
-    int degToUs(int deg, int minUs, int maxUs)
+    inline int degToUs(int deg, int minUs, int maxUs)
     {
         deg = clampInt(deg, 0, 180);
         return map(deg, 0, 180, minUs, maxUs);
     }
     // Konversi microseconds ke derajat
-    int usToDeg(int us, int minUs, int maxUs)
+    inline int usToDeg(int us, int minUs, int maxUs)
     {
         us = clampInt(us, minUs, maxUs);
         return map(us, minUs, maxUs, 0, 180);
     }
-    int tiltDegToUs(int deg)
+    inline int tiltDegToUs(int deg)
     {
         deg = clampInt(deg, TILT_DEG_MIN, TILT_DEG_MAX);
         return map(deg, TILT_DEG_MIN, TILT_DEG_MAX, TILT_MIN, TILT_MAX);
     }
-    int tiltUsToDeg(int us)
+    inline int tiltUsToDeg(int us)
     {
         us = clampInt(us, TILT_MIN, TILT_MAX);
         return map(us, TILT_MIN, TILT_MAX, TILT_DEG_MIN, TILT_DEG_MAX);
     }
-    float kalmanUpdate(float measurement)
+    inline float kalmanUpdate(float measurement)
     {
         float x = 0;    // estimate
         float P = 1;    // estimation error
@@ -54,7 +54,7 @@ struct
 
         return x;
     }
-    void writePan(int targetUs)
+    inline void writePan(int targetUs)
     {
         int diff = targetUs - currentPan;
 

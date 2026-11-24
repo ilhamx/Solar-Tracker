@@ -1,9 +1,35 @@
 #pragma once
 #include <Arduino.h>
 #include <Wire.h>
+#include <WiFi.h>
 #include <DallasTemperature.h>
 #include "INA226.h"
 #include <ESP32Servo.h>
+#include "mqtt_client.h"
+#include "esp_crt_bundle.h"
+
+const char* emqx_root_ca = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIICGTCCAZ+gAwIBAgIQCeCTZaz32ci5PhwLBCou8zAKBggqhkjOPQQDAzBOMQsw
+CQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xJjAkBgNVBAMTHURp
+Z2lDZXJ0IFRMUyBFQ0MgUDM4NCBSb290IEc1MB4XDTIxMDExNTAwMDAwMFoXDTQ2
+MDExNDIzNTk1OVowTjELMAkGA1UEBhMCVVMxFzAVBgNVBAoTDkRpZ2lDZXJ0LCBJ
+bmMuMSYwJAYDVQQDEx1EaWdpQ2VydCBUTFMgRUNDIFAzODQgUm9vdCBHNTB2MBAG
+ByqGSM49AgEGBSuBBAAiA2IABMFEoc8Rl1Ca3iOCNQfN0MsYndLxf3c1TzvdlHJS
+7cI7+Oz6e2tYIOyZrsn8aLN1udsJ7MgT9U7GCh1mMEy7H0cKPGEQQil8pQgO4CLp
+0zVozptjn4S1mU1YoI71VOeVyaNCMEAwHQYDVR0OBBYEFMFRRVBZqz7nLFr6ICIS
+B4CIfBFqMA4GA1UdDwEB/wQEAwIBhjAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49
+BAMDA2gAMGUCMQCJao1H5+z8blUD2WdsJk6Dxv3J+ysTvLd6jLRl0mlpYxNjOyZQ
+LgGheQaRnUi/wr4CMEfDFXuxoJGZSZOoPHzoRgaLLPIxAJSdYsiJvRmEFOml+wG4
+DXZDjC5Ty3zfDBeWUA==
+-----END CERTIFICATE-----
+)EOF";
+
+
+// #include <WiFi.h>
+// #include <ESPmDNS.h>
+// #include <NetworkUdp.h>
+// #include <ArduinoOTA.h>
 
 // Format perintah serial (case-insensitive, newline-terminated):
 // MANUAL ON            -> aktifkan mode manual (hentikan tracking otomatis)
@@ -26,17 +52,19 @@ SemaphoreHandle_t i2cMutex;
 
 // Konfigurasi pin dll...
 OneWire oneWire(23);
-DallasTemperature sensors(&oneWire);
+DallasTemperature ds18b20(&oneWire);
 
 // Create an INA3221 object
 INA226 INA(0x40);
 
-// #define Wire I2CBus1
-#include <WiFi.h>
-#include "mqtt_client.h"
 
-char ssid[] = "LPG_3KG";
-char pass[] = "piulbaikhati";
+// char ssid[] = "ppk";
+// char pass[] = "11111111";
+// char ssid[] = "LPG_3KG";
+// char pass[] = "piulbaikhati";
+
+const char* ssid = "LPG_3KG";
+const char* pass = "piulbaikhati";
 
 // Pin Sensor LDR 1-4
 #define LDR1 35
@@ -99,7 +127,8 @@ float tiltAngle = 1500;
 volatile bool manualMode = false;
 
 // Konfigurasi Broker MQTT WSS
-const char *mqtt_broker_uri = "wss://mqtt.solar2axis.my.id:443/mqtt";
+const char *mqtt_broker_uri = "wss://broker.emqx.io:8084/mqtt";
+// const char *mqtt_broker_uri = "wss://mqtt.solar2axis.my.id:443/mqtt";
 const char *mqtt_broker_uri_local = "mqtt://192.168.4.2:1883";
 const char *topic_pub_ina = "tracker/sensor/ina226";
 const char *topic_pub_ldr = "tracker/sensor/ldr";
@@ -111,3 +140,4 @@ const char *topic_sub = "tracker/perintah";
 esp_mqtt_client_handle_t client;
 bool isMqttConnected = false;
 unsigned long lastPublish = 0;
+
