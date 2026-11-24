@@ -1,170 +1,26 @@
 #include <Arduino.h>
-#include "global.h"
+#include "utils.h"
+#include "mqtt.h"
 #include "oled.h"
 #include "tracker.h"
 #include "ina_ldr.h"
 
-void executeCommand(String cmd);
-// Handler untuk menangkap semua event MQTT (Koneksi, Data Masuk, Error)
-static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+void connectWiFi()
 {
-  esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
 
-  switch ((esp_mqtt_event_id_t)event_id)
+  Serial.print("Connecting WiFi");
+
+  while (WiFi.status() != WL_CONNECTED)
   {
-  case MQTT_EVENT_CONNECTED:
-    Serial.println("[MQTT] Terhubung ke broker WSS!");
-    isMqttConnected = true;
-    // Subscribe ke topik setelah berhasil terhubung
-    esp_mqtt_client_subscribe(client, topic_sub, 1);
-    Serial.printf("[MQTT] Subscribed ke topik: %s\n", topic_sub);
-    break;
-
-  case MQTT_EVENT_DISCONNECTED:
-    Serial.println("[MQTT] Terputus dari broker.");
-    isMqttConnected = false;
-    break;
-
-  case MQTT_EVENT_DATA:
-  {
-    Serial.println("[MQTT] Pesan diterima!");
-    Serial.printf("Topik : %.*s\n", event->topic_len, event->topic);
-    Serial.printf("Data  : %.*s\n", event->data_len, event->data);
-
-    // Ekstrak payload string dari event data
-    String payload = String(event->data).substring(0, event->data_len);
-    payload.trim();
-
-    if (payload.length() > 0)
-    {
-      // Jalankan perintah menggunakan fungsi helper yang sama dengan Serial
-      executeCommand(payload);
-    }
+    delay(500);
+    Serial.print(".");
   }
-  break;
 
-  case MQTT_EVENT_ERROR:
-    Serial.println("[MQTT] Terjadi kesalahan koneksi/TLS.");
-    break;
-
-  default:
-    break;
-  }
+  Serial.println("\nWiFi connected!");
+  Serial.println(WiFi.localIP());
 }
-void mqtt_app_start(bool isLocal)
-{
-  esp_mqtt_client_config_t mqtt_cfg = {};
-
-  if (!isLocal)
-  { // internet
-    // Alamat lengkap beserta path WebSocket (/mqtt atau /ws tergantung broker)
-    esp_mqtt_client_config_t mqtt_cfg = {};
-    mqtt_cfg.uri = mqtt_broker_uri;
-    mqtt_cfg.cert_pem = emqx_root_ca;
-    // Verifikasi sertifikat SSL menggunakan bundle CA bawaan ESP32
-    mqtt_cfg.use_global_ca_store = true;
-
-    // Opsional: Jika broker membutuhkan username & password
-    // mqtt_cfg.username = "iot";
-    // mqtt_cfg.password = "iot123";
-  }
-  else
-  { // local
-    mqtt_cfg.uri = mqtt_broker_uri_local;
-  }
-
-  client = esp_mqtt_client_init(&mqtt_cfg);
-  Serial.println("1");
-  esp_mqtt_client_register_event(client, (esp_mqtt_event_id_t)ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
-  Serial.println("2");
-  esp_mqtt_client_start(client);
-  Serial.println("3");
-}
-// Fungsi helper agar mudah digunakan di mana saja
-void publishLogToMqtt(String message)
-{
-  if (serialLogQueue != NULL)
-  {
-    char buffer[128];
-    message.toCharArray(buffer, sizeof(buffer));
-    // Kirim ke queue dengan timeout 0 (non-blocking jika dipanggil dari interrupt/task cepat)
-    xQueueSend(serialLogQueue, &buffer, 0);
-  }
-}
-void handleWifi(void *pvParameters)
-{
-  unsigned long lastRetryTime = 0;
-  const unsigned long retryInterval = 10000; // Retry every 10 seconds
-
-  for (;;)
-  {
-    if (WiFi.status() == WL_CONNECTED)
-    {
-      digitalWrite(LED_WIFI, HIGH);
-      // return; // Connected; do nothing
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-}
-// void checkWifi(void *pvParameters)
-// {
-//   for (;;)
-//   {
-
-//     // if (WiFi.status() != WL_CONNECTED)
-//     // {
-//     //   timestart = millis(); // reset waktu ketika wifi konek
-//     //   isWifiConnected = true;
-//     //   digitalWrite(LED_WIFI, HIGH);
-//     //   Serial.println("Wifi Connected...");
-//     // }
-//     // else
-//     // {
-//     //   isWifiConnected = false;
-//     //   static bool blinking = false;
-//     //   Serial.print("..");
-//     //   if (blinking)
-//     //     digitalWrite(LED_WIFI, LOW);
-//     //   else
-//     //     digitalWrite(LED_WIFI, HIGH);
-//     //   blinking = !blinking;
-//     // }
-//     // static bool hasrun1 = false;
-//     // if (now - timestart >= 30000 && !hasrun1)
-//     // {
-//     //   WiFi.disconnect(true);
-//     //   vTaskDelay(pdMS_TO_TICKS(500));
-//     //   // 2. Ubah mode sepenuhnya ke AP
-//     //   WiFi.mode(WIFI_AP);
-//     //   // 3. Jalankan AP
-//     //   WiFi.softAP("ESP32_Access_Point", "password123");
-//     //   Serial.print("Berhasil beralih ke AP Mode! IP: ");
-//     //   Serial.println(WiFi.softAPIP());
-//     //   mqtt_app_start(true);
-//     //   hasrun1 = true;
-//     // }
-
-//     static bool step1 = false, step2 = false;
-//     // if (WiFi.isConnected() == true && !step2)
-//     // {
-//     //   // Mulai klien MQTT WSS
-//     //   Serial.println("Memulai mqtt...");
-//     //   // mqtt_app_start(false);
-//     //   step2 = true;
-//     // }
-//     if (step1)
-//       return;
-
-//     /*********** BLYNK ***********/
-//     // Serial.println("Mencoba menyambung ke WiFi...");
-//     // WiFi.disconnect();
-//     // WiFi.mode(WIFI_STA);
-//     // WiFi.begin(ssid, pass); // connect to Wi-Fi
-//     step1 = true;
-//     vTaskDelay(1000 / portTICK_PERIOD_MS);
-//   }
-// }
 void executeCommand(String cmd)
 {
   cmd.toUpperCase();
@@ -179,21 +35,18 @@ void executeCommand(String cmd)
     {
       manualMode = true;
       String msg = "Manual mode: ON";
-      Serial.println(msg);
-      publishLogToMqtt(msg);
+      logInfo(msg);
     }
     else if (arg == "OFF")
     {
       manualMode = false;
       String msg = "Manual mode: OFF";
-      Serial.println(msg);
-      publishLogToMqtt(msg);
+      logInfo(msg);
     }
     else
     {
       String msg = "Usage: MANUAL ON|OFF";
-      Serial.println(msg);
-      publishLogToMqtt(msg);
+      logInfo(msg);
     }
   }
   else if (verb == "PAN" || verb == "TILT")
@@ -201,8 +54,7 @@ void executeCommand(String cmd)
     if (arg.length() == 0)
     {
       String msg = "Provide degree value, e.g. PAN 90";
-      Serial.println(msg);
-      publishLogToMqtt(msg);
+      logInfo(msg);
     }
     else
     {
@@ -213,8 +65,7 @@ void executeCommand(String cmd)
         panAngle = us;
         servoPan.writeMicroseconds(tracker.clampInt(us, PAN_MIN, PAN_MAX));
         String msg = "PAN set: " + String(deg) + " deg -> " + String(us) + " us";
-        Serial.println(msg);
-        publishLogToMqtt(msg);
+        logInfo(msg);
       }
       else
       {
@@ -222,8 +73,7 @@ void executeCommand(String cmd)
         tiltAngle = us;
         servoTilt.writeMicroseconds(tracker.clampInt(us, TILT_MIN, TILT_MAX));
         String msg = "TILT set: " + String(deg) + " deg -> " + String(us) + " us";
-        Serial.println(msg);
-        publishLogToMqtt(msg);
+        logInfo(msg);
       }
     }
   }
@@ -232,8 +82,7 @@ void executeCommand(String cmd)
     if (arg.length() == 0)
     {
       String msg = "Provide microseconds value, e.g. PAN_US 1500";
-      Serial.println(msg);
-      publishLogToMqtt(msg);
+      logInfo(msg);
     }
     else
     {
@@ -244,8 +93,7 @@ void executeCommand(String cmd)
         panAngle = us;
         servoPan.writeMicroseconds(us);
         String msg = "PAN_US set: " + String(us) + " us";
-        Serial.println(msg);
-        publishLogToMqtt(msg);
+        logInfo(msg);
       }
       else
       {
@@ -253,8 +101,7 @@ void executeCommand(String cmd)
         tiltAngle = us;
         servoTilt.writeMicroseconds(us);
         String msg = "TILT_US set: " + String(us) + " us";
-        Serial.println(msg);
-        publishLogToMqtt(msg);
+        logInfo(msg);
       }
     }
   }
@@ -263,8 +110,7 @@ void executeCommand(String cmd)
     if (arg.length() == 0)
     {
       String msg = "Provide delta degrees, e.g. PAN_DELTA -5";
-      Serial.println(msg);
-      publishLogToMqtt(msg);
+      logInfo(msg);
     }
     else
     {
@@ -277,8 +123,7 @@ void executeCommand(String cmd)
         panAngle = us;
         servoPan.writeMicroseconds(us);
         String msg = "PAN_DELTA: now " + String(nd) + " deg -> " + String(us) + " us";
-        Serial.println(msg);
-        publishLogToMqtt(msg);
+        logInfo(msg);
       }
       else
       {
@@ -288,8 +133,7 @@ void executeCommand(String cmd)
         tiltAngle = us;
         servoTilt.writeMicroseconds(us);
         String msg = "TILT_DELTA: now " + String(nd) + " deg -> " + String(us) + " us";
-        Serial.println(msg);
-        publishLogToMqtt(msg);
+        logInfo(msg);
       }
     }
   }
@@ -298,8 +142,7 @@ void executeCommand(String cmd)
     if (arg.length() == 0)
     {
       String msg = "Current stepSize: " + String(stepSize);
-      Serial.println(msg);
-      publishLogToMqtt(msg);
+      logInfo(msg);
     }
     else
     {
@@ -307,15 +150,13 @@ void executeCommand(String cmd)
       if (s <= 0)
       {
         String msg = "Step must be > 0";
-        Serial.println(msg);
-        publishLogToMqtt(msg);
+        logInfo(msg);
       }
       else
       {
         stepSize = s;
         String msg = "stepSize set to " + String(stepSize);
-        Serial.println(msg);
-        publishLogToMqtt(msg);
+        logInfo(msg);
       }
     }
   }
@@ -326,8 +167,7 @@ void executeCommand(String cmd)
     servoPan.writeMicroseconds((int)panAngle);
     servoTilt.writeMicroseconds((int)tiltAngle);
     String msg = "Homing: pan -> " + String((int)panAngle) + " us | tilt -> " + String((int)tiltAngle) + " us";
-    Serial.println(msg);
-    publishLogToMqtt(msg);
+    logInfo(msg);
   }
   else if (verb == "STATUS")
   {
@@ -336,8 +176,7 @@ void executeCommand(String cmd)
     char buf[128];
     snprintf(buf, sizeof(buf), "Manual:%s | pan=%d us (%d deg) | tilt=%d us (%d deg) | step=%d",
              manualMode ? "ON" : "OFF", (int)panAngle, panDeg, (int)tiltAngle, tiltDeg, stepSize);
-    Serial.println(buf);
-    publishLogToMqtt(buf);
+    logInfo(buf);
   }
   else if (verb == "READINA")
   {
@@ -347,13 +186,11 @@ void executeCommand(String cmd)
   {
     char buf[128];
     snprintf(buf, sizeof(buf), "L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f\n", L1, L2, L3, L4, sum);
-    Serial.println(buf);
-    publishLogToMqtt(buf);
+    logInfo(buf);
   }
   else
   {
-    Serial.println("Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS, READINA, READSENS");
-    publishLogToMqtt("Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS, READINA, READSENS");
+    logWarning("Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS, READINA, READSENS");
   }
 }
 void ReadString(void *pvParameters)
@@ -423,63 +260,8 @@ void TaskMqtt(void *pvParameters)
   static bool hasrun = false;
   for (;;)
   {
-    Serial.println("task mqtt");
-    if (WiFi.status() == WL_CONNECTED)
-    {
-      Serial.println("connected");
-      
-      if (!hasrun){
-        mqtt_app_start(false);
-        hasrun = true;
-        Serial.println("mqtt started");
-      }
-      // return; // Connected; do nothing
-    }
-    if (isMqttConnected && (millis() - lastPublish > 1000))
-    {
-      lastPublish = millis();
-
-      sensor.readINA();
-      // Cek apakah ada antrian log serial yang harus dikirim segera
-      if (isMqttConnected && serialLogQueue != NULL)
-      {
-        // Ambil data dari queue jika ada
-        while (xQueueReceive(serialLogQueue, &receivedLog, 0) == pdPASS)
-        {
-          esp_mqtt_client_publish(client, topic_pub_log, receivedLog, 0, 1, 0);
-          vTaskDelay(pdMS_TO_TICKS(50)); // Jeda kecil antar publish agar tidak flood broker
-        }
-      }
-      // 1. Topik INA226 (Tegangan, Arus, Daya)
-      String payloadINA = "{\"bus_voltage\":" + String(busVoltage, 2) +
-                          ",\"shunt_voltage\":" + String(shuntVoltage, 2) +
-                          ",\"current\":" + String(current, 2) +
-                          ",\"power\":" + String(power, 2) + "}";
-      esp_mqtt_client_publish(client, "tracker/sensor/ina226", payloadINA.c_str(), 0, 1, 0);
-
-      // 2. Topik Sensor LDR (L1 - L4)
-      String payloadLDR = "{\"ldr1\":" + String(L1, 1) +
-                          ",\"ldr2\":" + String(L2, 1) +
-                          ",\"ldr3\":" + String(L3, 1) +
-                          ",\"ldr4\":" + String(L4, 1) +
-                          ",\"sum\":" + String(sum, 1) + "}";
-      esp_mqtt_client_publish(client, "tracker/sensor/ldr", payloadLDR.c_str(), 0, 1, 0);
-
-      // 3. Topik Sudut Tracker & Suhu
-      int panDeg = tracker.usToDeg((int)panAngle, PAN_MIN, PAN_MAX);
-      int tiltDeg = tracker.tiltUsToDeg((int)tiltAngle);
-      String payloadStatus = "{\"pan_us\":" + String((int)panAngle) +
-                             ",\"pan_deg\":" + String(panDeg) +
-                             ",\"tilt_us\":" + String((int)tiltAngle) +
-                             ",\"tilt_deg\":" + String(tiltDeg) +
-                             ",\"temp_c\":" + String(tempC, 2) +
-                             ",\"uptime\":" + String(millis() / 1000) + "}";
-      esp_mqtt_client_publish(client, "tracker/status", payloadStatus.c_str(), 0, 1, 0);
-
-      // Parameter: client, topic, data, len (0 = otomatis), qos, retain
-      Serial.println("[MQTT] Semua data sensor berhasil dipublish ke topik terpisah.");
-    }
-    vTaskDelay(500 / portTICK_PERIOD_MS);
+    loopMQTT();
+    vTaskDelay(PUBLISH_INTERVAL / portTICK_PERIOD_MS);
   }
 }
 void taskSensor(void *pvParameters)
@@ -558,14 +340,13 @@ void setup()
   /*********** BLYNK ***********/
   Serial.println("Mencoba menyambung ke WiFi...");
   WiFi.setAutoReconnect(true);
-  // WiFi.mode(WIFI_STA);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, pass); // connect to Wi-Fi
+  connectWiFi();
+  setupMQTT();
   // Core 1: Khusus untuk Kendali Utama & Komunikasi Data
   // Pindahkan tracking dan sensor cahaya ke sini agar tidak terganggu WiFi
   // xTaskCreatePinnedToCore(taskSensor, "Task Sensor", 4096, NULL, 2, NULL, 1);
   // xTaskCreatePinnedToCore(TaskTracking, "Task Tracking", 4096, NULL, 2, NULL, 1);
-  xTaskCreatePinnedToCore(TaskMqtt, "mqtt", 32000, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(TaskMqtt, "mqtt", 8096, NULL, 1, NULL, 1);
 
   // Core 0: Fokus ke Input Serial, Sistem, dan Sensor Lambat
   // Berbagi beban dengan internal WiFi stack

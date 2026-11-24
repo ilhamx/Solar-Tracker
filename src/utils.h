@@ -5,26 +5,6 @@
 #include <DallasTemperature.h>
 #include "INA226.h"
 #include <ESP32Servo.h>
-#include "mqtt_client.h"
-#include "esp_crt_bundle.h"
-
-const char* emqx_root_ca = R"EOF(
------BEGIN CERTIFICATE-----
-MIICGTCCAZ+gAwIBAgIQCeCTZaz32ci5PhwLBCou8zAKBggqhkjOPQQDAzBOMQsw
-CQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xJjAkBgNVBAMTHURp
-Z2lDZXJ0IFRMUyBFQ0MgUDM4NCBSb290IEc1MB4XDTIxMDExNTAwMDAwMFoXDTQ2
-MDExNDIzNTk1OVowTjELMAkGA1UEBhMCVVMxFzAVBgNVBAoTDkRpZ2lDZXJ0LCBJ
-bmMuMSYwJAYDVQQDEx1EaWdpQ2VydCBUTFMgRUNDIFAzODQgUm9vdCBHNTB2MBAG
-ByqGSM49AgEGBSuBBAAiA2IABMFEoc8Rl1Ca3iOCNQfN0MsYndLxf3c1TzvdlHJS
-7cI7+Oz6e2tYIOyZrsn8aLN1udsJ7MgT9U7GCh1mMEy7H0cKPGEQQil8pQgO4CLp
-0zVozptjn4S1mU1YoI71VOeVyaNCMEAwHQYDVR0OBBYEFMFRRVBZqz7nLFr6ICIS
-B4CIfBFqMA4GA1UdDwEB/wQEAwIBhjAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49
-BAMDA2gAMGUCMQCJao1H5+z8blUD2WdsJk6Dxv3J+ysTvLd6jLRl0mlpYxNjOyZQ
-LgGheQaRnUi/wr4CMEfDFXuxoJGZSZOoPHzoRgaLLPIxAJSdYsiJvRmEFOml+wG4
-DXZDjC5Ty3zfDBeWUA==
------END CERTIFICATE-----
-)EOF";
-
 
 // #include <WiFi.h>
 // #include <ESPmDNS.h>
@@ -126,18 +106,5 @@ float tiltAngle = 1500;
 // Manual control flag: when true, automatic tracking (updateSens) is paused
 volatile bool manualMode = false;
 
-// Konfigurasi Broker MQTT WSS
-const char *mqtt_broker_uri = "wss://broker.emqx.io:8084/mqtt";
-// const char *mqtt_broker_uri = "wss://mqtt.solar2axis.my.id:443/mqtt";
-const char *mqtt_broker_uri_local = "mqtt://192.168.4.2:1883";
-const char *topic_pub_ina = "tracker/sensor/ina226";
-const char *topic_pub_ldr = "tracker/sensor/ldr";
-const char *topic_pub_servo = "tracker/servo/status";
-const char *topic_pub_temp = "tracker/sensor/temperature";
-const char *topic_pub_log = "tracker/log/serial";
-const char *topic_sub = "tracker/perintah";
-
-esp_mqtt_client_handle_t client;
 bool isMqttConnected = false;
-unsigned long lastPublish = 0;
 
