@@ -1,5 +1,4 @@
 #pragma once
-#include "ina_ldr.h"
 #include <WebSocketsClient.h>
 #include <MQTTPubSubClient.h>
 extern void executeCommand(String cmd);
@@ -45,7 +44,7 @@ bool wasConnected = false;
 // ========================================
 // MQTT LOGGING
 // ========================================
-void logMQTT(const String& message)
+void logMQTT(const String &message)
 {
     // Serial Monitor lokal
     Serial.println(message);
@@ -60,39 +59,19 @@ void logMQTT(const String& message)
 // ========================================
 // LOG LEVEL
 // ========================================
-void logInfo(const String& message)
+void logInfo(const String &message)
 {
     logMQTT(String("[INFO] ") + message);
 }
 
-void logWarning(const String& message)
+void logWarning(const String &message)
 {
     logMQTT(String("[WARNING] ") + message);
 }
 
-void logError(const String& message)
+void logError(const String &message)
 {
     logMQTT(String("[ERROR] ") + message);
-}
-// test
-void publish()
-{
-    char buffer[128];
-    static float voltage = 2.4, ampere = 0.1f;
-    voltage += 0.1f;
-    ampere += 0.1f;
-    static uint i = 0;
-    i++;
-    // sprintf(buffer, "ONLINE ke %d", i);
-    // mqtt.publish("solar/tracker/status", buffer);
-    mqtt.publish("solar/ldr/l1", String(sensor.L1));
-    mqtt.publish("solar/ldr/l2", String(sensor.L2));
-    mqtt.publish("solar/ldr/l3", String(sensor.L3));
-    mqtt.publish("solar/ldr/l4", String(sensor.L4));
-    mqtt.publish("solar/temp/t1", String(sensor.tempC));
-    mqtt.publish("solar/tracker/voltage", String(voltage));
-    mqtt.publish("solar/tracker/ampere", String(ampere));
-    // logInfo("berhasil kirim data");
 }
 // ========================================
 // MQTT CALLBACK
@@ -213,52 +192,4 @@ void setupMQTT()
 
     // Initial MQTT connection
     connectMQTT();
-}
-
-// ========================================
-// LOOP
-// ========================================
-void loopMQTT()
-{
-    if (WiFi.status() != WL_CONNECTED)
-    {
-        WiFi.reconnect();
-        vTaskDelay(pdMS_TO_TICKS(3000));
-        return;
-    }
-
-    // Process MQTT and its WebSocket transport
-    mqtt.update();
-
-    // Detect disconnection
-    if (wasConnected && !mqtt.isConnected())
-    {
-        Serial.println("[MQTT] Connection lost!");
-        wasConnected = false;
-    }
-
-    // Reconnect MQTT
-    if (!mqtt.isConnected())
-    {
-        connectMQTT();
-        vTaskDelay(pdMS_TO_TICKS(3000));
-        Serial.println("Reconnect MQTT");
-    }
-
-    // Publish
-    if (mqtt.isConnected())
-    {
-
-        String payload =
-            "{\"temperature\":30.5,"
-            "\"voltage\":12.4}";
-
-        bool result = mqtt.publish(
-            TOPIC_PUB,
-            payload);
-        publish();
-
-        Serial.println(
-            result ? "[MQTT TX] Success" : "[MQTT TX] Failed");
-    }
 }

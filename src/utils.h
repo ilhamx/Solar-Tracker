@@ -6,6 +6,19 @@
 #include "INA226.h"
 #include <ESP32Servo.h>
 
+#define BUTTON_PIN 0  // GPIO 0 is the built-in BOOT button on most ESP32 boards
+
+const char* ap_ssid = "ESP32-OTA-AP";
+const char* ap_pass = "12345678"; // Minimum 8 characters
+
+volatile bool otaTrigger = false;
+volatile bool otaTriggerMqtt = false;
+bool otaActive = false;
+
+// Interrupt Service Routine (ISR) for the button
+void IRAM_ATTR handleButtonInterrupt() {
+  otaTrigger = true;
+}
 // #include <WiFi.h>
 // #include <ESPmDNS.h>
 // #include <NetworkUdp.h>
@@ -43,23 +56,20 @@ QueueHandle_t serialLogQueue;
 // char pass[] = "11111111";
 // char ssid[] = "LPG_3KG";
 // char pass[] = "piulbaikhati";
-
 const char *ssid = "LPG_3KG";
 const char *pass = "piulbaikhati";
 
+// Pin Leds
+#define LED_WIFI 2
+#define LED_STATUS 15
 // Pin Sensor LDR 1-4
 #define LDR1 35
 #define LDR2 34
 #define LDR3 36
 #define LDR4 39
-
 // batas hasil pengukuran nilai maksimum dan minimum ldr, untuk menentukan apakah sensor terjadi masalah.
 #define MAX_LDR 5
 #define MIN_LDR 1018
-
-#define LED_WIFI 2
-#define LED_STATUS 15
-
 /*********** TRACKER PARAM ***********/
 #define PAN_PIN 17
 #define TILT_PIN 16

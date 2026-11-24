@@ -1,9 +1,8 @@
 #pragma once
-#include "tracker.h"
 
 struct sensorData
 {
-    uint16_t L1, L2, L3, L4, sum;
+    uint16_t L1, L2, L3, L4, sumLDR;
     float tempC; // light levels from 4 sensors
     float busVoltage, shuntVoltage, current, power;
     
@@ -72,8 +71,6 @@ struct sensorData
         L2 = kalmanUpdate(analogRead(LDR2), 1);
         L3 = kalmanUpdate(analogRead(LDR3), 2);
         L4 = kalmanUpdate(analogRead(LDR4), 3);
-        sum = L1 + L2 + L3 + L4;
+        sumLDR = L1 + L2 + L3 + L4;
     }
-};
-
-extern sensorData sensor;
+} sensor;
