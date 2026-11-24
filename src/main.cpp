@@ -6,27 +6,6 @@
 #include "sensor.h"
 #include "tracker.h"
 
-inline void writePan(int targetUs)
-{
-  int diff = targetUs - track.currentPan;
-
-  // Serial.printf("Moving servo to %d us (target: %d us)\n", track.currentPan, targetUs);
-  // Jika perubahan kecil, abaikan (anti jitter)
-  // if (abs(diff) < deadband) {
-  //   return;
-  // }
-  // Gerakan bertahap
-  if (diff > 0)
-  {
-    track.currentPan += track.stepSize;
-  }
-  else
-  {
-    track.currentPan -= track.stepSize;
-  }
-
-  servoPan.writeMicroseconds(track.currentPan);
-}
 void connectWiFi()
 {
   WiFi.mode(WIFI_STA);
@@ -208,14 +187,24 @@ void executeCommand(String cmd)
   }
   else if (verb == "DEEPSLEEP")
   {
-    logInfo("Mulai esp32 deepsleep dalam 3 detik...");
-
-
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    uint64_t sleep_seconds = 15; // 24 hours
-    // uint64_t sleep_seconds = 3600ULL * 24; // 24 hours
-    esp_sleep_enable_timer_wakeup(sleep_seconds * 1000000ULL);
-    esp_deep_sleep_start();
+    if (arg.length() == 0)
+    {
+      String msg = "Provide time in hour, e.g. DEEPSLEEP 3";
+      logInfo(msg);
+    }
+    else
+    {
+      int d = arg.toInt();
+      String msg = "Memulai esp32 deepsleep selama " + String(d) + " jam...";
+      logInfo(msg);
+  
+      vTaskDelay(pdMS_TO_TICKS(3000));
+      // uint64_t sleep_seconds = 15; // 24 hours
+      // uint64_t sleep_seconds = 3600ULL * 24;
+      uint64_t sleep_seconds = 3600ULL * d;
+      esp_sleep_enable_timer_wakeup(sleep_seconds * 1000000ULL);
+      esp_deep_sleep_start();
+    }
   }
   else if (verb == "REBOOT")
   {
@@ -303,6 +292,7 @@ void TaskMqtt(void *pvParameters)
 {
   for (;;)
   {
+
     if (WiFi.status() != WL_CONNECTED)
     {
       WiFi.reconnect();
@@ -353,11 +343,14 @@ void TaskMqtt(void *pvParameters)
       payload += "\"current\":" + String(sensor.current, 2) + ",";
       payload += "\"power\":" + String(sensor.power, 2) + ",";
       payload += "\"temp\":" + String(sensor.tempC, 2) + ",";
-      payload += "\"currentPan\":" + String(track.currentPan, 2) + ",";
-      payload += "\"currentTilt\":" + String(track.currentTilt, 2) + ",";
-      payload += "\"panAngle\":" + String(track.panAngle, 2) + ",";
-      payload += "\"tiltAngle\":" + String(track.tiltAngle, 2);
+      payload += "\"currentPan\":" + String(track.currentPan) + ",";
+      payload += "\"currentTilt\":" + String(track.currentTilt) + ",";
+      payload += "\"panAngle\":" + String(track.panAngle, 1) + ",";
+      payload += "\"tiltAngle\":" + String(track.tiltAngle, 1);
       payload += "}";
+
+      Serial.printf("data panAngle: %.2f\n", track.panAngle);
+      // Serial.printf("data mutex panAngle: %.2f\n", mqttTracker.panAngle);
 
       bool result = mqtt.publish(
           TOPIC_PUB,
@@ -408,6 +401,8 @@ void TaskTracking(void *pvParameters)
       vTaskDelay(pdMS_TO_TICKS(500));
       continue;
     }
+    // Update variabel tracker
+    // Selesai mengakses track
 
     /*********** FUSION **********
      * Calculate normalized error in X and Y directions based on light levels
@@ -427,14 +422,14 @@ void TaskTracking(void *pvParameters)
     if (abs(track.ny) < track.deadzone)
       track.ny = 0;
 
-    track.panAngle += track.nx * track.Kp_X;
+    track.currentPan += track.nx * track.Kp_X;
     track.tiltAngle += track.ny * track.Kp_Y;
 
-    track.panAngle = constrain(track.panAngle, PAN_MIN, PAN_MAX);
+    track.currentPan = constrain(track.currentPan, PAN_MIN, PAN_MAX);
     track.tiltAngle = constrain(track.tiltAngle, TILT_MIN, TILT_MAX);
 
     static int panMinCounter = 0;
-    if (track.panAngle <= PAN_MIN)
+    if (track.currentPan <= PAN_MIN)
     {
       panMinCounter++;
       if (panMinCounter >= 150)
@@ -451,8 +446,8 @@ void TaskTracking(void *pvParameters)
           }
           vTaskDelay(pdMS_TO_TICKS(70)); // Delay 100ms
         }
-        track.panAngle = 1500;
-        track.tiltAngle = 1500;
+        track.currentPan = 1500;
+        track.currentTilt = 1500;
         continue;
       }
     }
@@ -463,7 +458,7 @@ void TaskTracking(void *pvParameters)
 
     static int panMaxCounter = 0;
 
-    if (track.panAngle >= PAN_MAX)
+    if (track.currentPan >= PAN_MAX)
     {
       panMaxCounter++;
       if (panMaxCounter >= 150)
@@ -480,8 +475,8 @@ void TaskTracking(void *pvParameters)
           }
           vTaskDelay(pdMS_TO_TICKS(70)); // Delay 100ms
         }
-        track.panAngle = 1500;
-        track.tiltAngle = 1500;
+        track.currentPan = 1500;
+        track.currentTilt = 1500;
         continue;
       }
     }
@@ -489,8 +484,9 @@ void TaskTracking(void *pvParameters)
     {
       panMaxCounter = 0;
     }
-    servoPan.writeMicroseconds(track.panAngle);
-    servoTilt.writeMicroseconds(track.tiltAngle);
+    xSemaphoreGive(trackerMutex);
+    servoPan.writeMicroseconds(track.currentPan);
+    servoTilt.writeMicroseconds(track.currentTilt);
 
     vTaskDelayUntil(&lastWakeTime, period);
   }
@@ -581,6 +577,13 @@ void setup()
   {
     Serial.println("Mutex gagal dibuat!");
   }
+  trackerMutex = xSemaphoreCreateMutex();
+  if (trackerMutex == nullptr)
+  {
+    Serial.println("Gagal membuat Mutex!");
+    return;
+  }
+  Serial.println("Mutex berhasil dibuat!");
 
   /*********** MQTT ***********/
   Serial.println("Mencoba menyambung ke WiFi...");

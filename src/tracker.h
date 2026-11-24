@@ -17,6 +17,8 @@ struct trackerData
     int currentPan = 600;   // posisi awal servo (microseconds)
     int currentTilt = 1500; // posisi awal servo (microseconds)
 
-    float panAngle = 1500;
-    float tiltAngle = 1500;
+    float panAngle = 20.0;
+    float tiltAngle = 90.0;
 } track;
+
+SemaphoreHandle_t trackerMutex = nullptr;

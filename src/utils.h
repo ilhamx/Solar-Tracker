@@ -91,7 +91,7 @@ Servo servoTilt;
 #define YAW_LIMIT 160 // max rotation from start (degrees)
 
 // Manual control flag: when true, automatic tracking (updateSens) is paused
-volatile bool manualMode = false;
+volatile bool manualMode = true;
 
 bool isMqttConnected = false;
 
