@@ -48,6 +48,7 @@ void logMQTT(const String &message)
 {
     // Serial Monitor lokal
     Serial.println(message);
+    Serial.printf();
 
     // MQTT Monitor
     if (mqtt.isConnected())

@@ -6,28 +6,49 @@
 #include "sensor.h"
 #include "tracker.h"
 
-void connectWiFi()
+void initWiFi()
 {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  preferences.begin("wifi-config", false);
 
-  Serial.print("Connecting WiFi");
+  wifiSSID = preferences.getString("ssid", "LPG_3KG");
+  wifiPassword = preferences.getString("password", "piulbaikhati");
+
+  if (wifiSSID.isEmpty())
+  {
+    Serial.println("[WIFI] Kredensial belum tersedia");
+    return;
+  }
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+
+  Serial.printf("[WIFI] Connecting to %s", wifiSSID.c_str());
 
   while (WiFi.status() != WL_CONNECTED)
   {
-    delay(500);
+    vTaskDelay(pdMS_TO_TICKS(500));
     Serial.print(".");
   }
-
   Serial.println("\nWiFi connected!");
   Serial.println(WiFi.localIP());
 }
+// void connectWiFi()
+// {
+//   WiFi.mode(WIFI_STA);
+//   WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+//   Serial.print("Connecting WiFi");
+
+// }
 void executeCommand(String cmd)
 {
-  cmd.toUpperCase();
+  cmd.trim();
+  // cmd.toUpperCase();
   int sp = cmd.indexOf(' ');
   String verb = (sp == -1) ? cmd : cmd.substring(0, sp);
   String arg = (sp == -1) ? "" : cmd.substring(sp + 1);
+  verb.toUpperCase();
+  arg.toUpperCase();
 
   if (verb == "MANUAL")
   {
@@ -197,7 +218,7 @@ void executeCommand(String cmd)
       int d = arg.toInt();
       String msg = "Memulai esp32 deepsleep selama " + String(d) + " jam...";
       logInfo(msg);
-  
+
       vTaskDelay(pdMS_TO_TICKS(3000));
       // uint64_t sleep_seconds = 15; // 24 hours
       // uint64_t sleep_seconds = 3600ULL * 24;
@@ -220,6 +241,97 @@ void executeCommand(String cmd)
 
     vTaskDelay(pdMS_TO_TICKS(3000));
     otaTriggerMqtt = true;
+  }
+  // ========================================
+  // WIFI AP: wifi ap NamaAP password
+  // ========================================
+  else if (cmd.startsWith("wifi ap "))
+  {
+    String credentials = cmd.substring(8);
+    credentials.trim();
+
+    int separator = credentials.indexOf(' ');
+
+    if (separator <= 0)
+    {
+      Serial.println("[WIFI] Format: wifi ap NamaAP password");
+      return;
+    }
+
+    String newSSID = credentials.substring(0, separator);
+    String newPassword = credentials.substring(separator + 1);
+    newPassword.trim();
+
+    if (newSSID.isEmpty() || newPassword.length() < 8)
+    {
+      Serial.println("[WIFI] SSID tidak valid atau password minimal 8 karakter");
+      return;
+    }
+
+    // Simpan ke flash (NVS)
+    preferences.putString("ssid", newSSID);
+    preferences.putString("password", newPassword);
+
+    wifiSSID = newSSID;
+    wifiPassword = newPassword;
+
+    Serial.printf("[WIFI] Kredensial tersimpan: %s\n", wifiSSID.c_str());
+    Serial.println("[WIFI] Menghubungkan ke jaringan baru...");
+
+    WiFi.disconnect();
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+
+    wifiEnabled = true;
+  }
+
+  // ========================================
+  // WIFI TOGGLE
+  // ========================================
+  else if (cmd == "wifi toggle")
+  {
+
+    if (wifiEnabled)
+    {
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_OFF);
+
+      wifiEnabled = false;
+
+      Serial.println("[WIFI] OFF");
+    }
+    else
+    {
+      wifiEnabled = true;
+
+      if (!wifiSSID.isEmpty())
+      {
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+      }
+
+      Serial.println("[WIFI] ON");
+    }
+  }
+
+  // ========================================
+  // WIFI IP
+  // ========================================
+  else if (cmd == "wifi ip")
+  {
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      Serial.printf("[WIFI] IP Address: %s\n",
+                    WiFi.localIP().toString().c_str());
+
+      Serial.printf("[WIFI] SSID: %s\n",
+                    WiFi.SSID().c_str());
+    }
+    else
+    {
+      Serial.println("[WIFI] Belum terhubung");
+    }
   }
   else
   {
@@ -290,6 +402,10 @@ void TaskReadDS18B20(void *pvParameters)
 
 void TaskMqtt(void *pvParameters)
 {
+  /*********** MQTT ***********/
+  WiFi.setAutoReconnect(true);
+  initWiFi();
+  setupMQTT();
   for (;;)
   {
 
@@ -297,7 +413,7 @@ void TaskMqtt(void *pvParameters)
     {
       WiFi.reconnect();
       vTaskDelay(pdMS_TO_TICKS(3000));
-      continue;
+      // continue;
     }
 
     // Process MQTT and its WebSocket transport
@@ -573,6 +689,7 @@ void setup()
   servoTilt.writeMicroseconds(track.tiltAngle);
 
   i2cMutex = xSemaphoreCreateMutex();
+  serialMutex = xSemaphoreCreateMutex();
   if (i2cMutex == NULL)
   {
     Serial.println("Mutex gagal dibuat!");
@@ -585,10 +702,6 @@ void setup()
   }
   Serial.println("Mutex berhasil dibuat!");
 
-  /*********** MQTT ***********/
-  WiFi.setAutoReconnect(true);
-  connectWiFi();
-  setupMQTT();
   // Core 1: Khusus untuk Kendali Utama & Komunikasi Data
   // Pindahkan tracking dan sensor cahaya ke sini agar tidak terganggu WiFi
   xTaskCreatePinnedToCore(taskSensor, "Task Sensor", 4096, NULL, 1, NULL, 1);

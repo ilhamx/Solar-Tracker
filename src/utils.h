@@ -6,6 +6,15 @@
 #include "INA226.h"
 #include <ESP32Servo.h>
 
+#include <Preferences.h>
+
+Preferences preferences;
+
+String wifiSSID;
+String wifiPassword;
+
+bool wifiEnabled = true;
+
 #define BUTTON_PIN 0  // GPIO 0 is the built-in BOOT button on most ESP32 boards
 
 const char* ap_ssid = "ESP32-OTA-AP";
@@ -42,6 +51,7 @@ void IRAM_ATTR handleButtonInterrupt() {
 // Fungsi helper terpusat untuk mengeksekusi perintah (baik dari Serial maupun MQTT)
 
 SemaphoreHandle_t i2cMutex;
+SemaphoreHandle_t serialMutex;
 
 // Konfigurasi pin dll...
 OneWire oneWire(23);
