@@ -18,7 +18,6 @@ void initWiFi()
     Serial.println("[WIFI] Kredensial belum tersedia");
     return;
   }
-
   WiFi.mode(WIFI_STA);
   WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
 
@@ -26,20 +25,13 @@ void initWiFi()
 
   while (WiFi.status() != WL_CONNECTED)
   {
-    vTaskDelay(pdMS_TO_TICKS(500));
     Serial.print(".");
+    vTaskDelay(pdMS_TO_TICKS(500));
   }
-  Serial.println("\nWiFi connected!");
-  Serial.println(WiFi.localIP());
+  Serial.println("\n[WIFI] WiFi connected! IP : ");
+  Serial.print(WiFi.localIP());
+  Serial.println("");
 }
-// void connectWiFi()
-// {
-//   WiFi.mode(WIFI_STA);
-//   WiFi.begin(WIFI_SSID, WIFI_PASS);
-
-//   Serial.print("Connecting WiFi");
-
-// }
 void executeCommand(String cmd)
 {
   cmd.trim();
@@ -56,27 +48,23 @@ void executeCommand(String cmd)
     if (arg == "ON")
     {
       manualMode = true;
-      String msg = "Manual mode: ON";
-      logInfo(msg);
+      logMQTT(LOG_INFO, "Manual mode: ON");
     }
     else if (arg == "OFF")
     {
       manualMode = false;
-      String msg = "Manual mode: OFF";
-      logInfo(msg);
+      logMQTT(LOG_INFO, "Manual mode: OFF");
     }
     else
     {
-      String msg = "Usage: MANUAL ON|OFF";
-      logInfo(msg);
+      logMQTT(LOG_ERROR, "Usage: MANUAL ON|OFF");
     }
   }
   else if (verb == "PAN" || verb == "TILT")
   {
     if (arg.length() == 0)
     {
-      String msg = "Provide degree value, e.g. PAN 90";
-      logInfo(msg);
+      logMQTT(LOG_ERROR, "Provide degree value, e.g. PAN 90");
     }
     else
     {
@@ -86,16 +74,14 @@ void executeCommand(String cmd)
         int us = degToUs(deg, PAN_MIN, PAN_MAX);
         track.panAngle = us;
         servoPan.writeMicroseconds(clampInt(us, PAN_MIN, PAN_MAX));
-        String msg = "PAN set: " + String(deg) + " deg -> " + String(us) + " us";
-        logInfo(msg);
+        logMQTT(LOG_INFO, "PAN set: %d deg -> %d us", deg, us);
       }
       else
       {
         int us = tiltDegToUs(deg);
         track.tiltAngle = us;
         servoTilt.writeMicroseconds(clampInt(us, TILT_MIN, TILT_MAX));
-        String msg = "TILT set: " + String(deg) + " deg -> " + String(us) + " us";
-        logInfo(msg);
+        logMQTT(LOG_INFO, "TILT set: %d deg -> %d us", deg, us);
       }
     }
   }
@@ -103,8 +89,7 @@ void executeCommand(String cmd)
   {
     if (arg.length() == 0)
     {
-      String msg = "Provide microseconds value, e.g. PAN_US 1500";
-      logInfo(msg);
+      logMQTT(LOG_ERROR, "Provide microseconds value, e.g. PAN_US 1500");
     }
     else
     {
@@ -114,16 +99,14 @@ void executeCommand(String cmd)
         us = clampInt(us, PAN_MIN, PAN_MAX);
         track.panAngle = us;
         servoPan.writeMicroseconds(us);
-        String msg = "PAN_US set: " + String(us) + " us";
-        logInfo(msg);
+        logMQTT(LOG_INFO, "PAN_US set: %d us", us);
       }
       else
       {
         us = clampInt(us, TILT_MIN, TILT_MAX);
         track.tiltAngle = us;
         servoTilt.writeMicroseconds(us);
-        String msg = "TILT_US set: " + String(us) + " us";
-        logInfo(msg);
+        logMQTT(LOG_INFO, "TILT_US set: %d us", us);
       }
     }
   }
@@ -131,8 +114,7 @@ void executeCommand(String cmd)
   {
     if (arg.length() == 0)
     {
-      String msg = "Provide delta degrees, e.g. PAN_DELTA -5";
-      logInfo(msg);
+      logMQTT(LOG_ERROR, "Provide delta degrees, e.g. PAN_DELTA -5");
     }
     else
     {
@@ -144,8 +126,7 @@ void executeCommand(String cmd)
         int us = degToUs(nd, PAN_MIN, PAN_MAX);
         track.panAngle = us;
         servoPan.writeMicroseconds(us);
-        String msg = "PAN_DELTA: now " + String(nd) + " deg -> " + String(us) + " us";
-        logInfo(msg);
+        logMQTT(LOG_INFO, "PAN_DELTA: now %d deg -> %d us", nd, us);
       }
       else
       {
@@ -154,8 +135,7 @@ void executeCommand(String cmd)
         int us = tiltDegToUs(nd);
         track.tiltAngle = us;
         servoTilt.writeMicroseconds(us);
-        String msg = "TILT_DELTA: now " + String(nd) + " deg -> " + String(us) + " us";
-        logInfo(msg);
+        logMQTT(LOG_INFO, "TILT_DELTA: now %d deg -> %d us", nd, us);
       }
     }
   }
@@ -163,22 +143,19 @@ void executeCommand(String cmd)
   {
     if (arg.length() == 0)
     {
-      String msg = "Current stepSize: " + String(track.stepSize);
-      logInfo(msg);
+      logMQTT(LOG_INFO, "Current stepSize: %d", track.stepSize);
     }
     else
     {
       int s = arg.toInt();
       if (s <= 0)
       {
-        String msg = "Step must be > 0";
-        logInfo(msg);
+        logMQTT(LOG_INFO, "Step must be > 0");
       }
       else
       {
         track.stepSize = s;
-        String msg = "stepSize set to " + String(track.stepSize);
-        logInfo(msg);
+        logMQTT(LOG_INFO, "stepSize set to %d", track.stepSize);
       }
     }
   }
@@ -188,36 +165,30 @@ void executeCommand(String cmd)
     track.tiltAngle = (TILT_MIN + TILT_MAX) / 2; // 1300 us
     servoPan.writeMicroseconds((int)track.panAngle);
     servoTilt.writeMicroseconds((int)track.tiltAngle);
-    String msg = "Homing: pan -> " + String((int)track.panAngle) + " us | tilt -> " + String((int)track.tiltAngle) + " us";
-    logInfo(msg);
+    logMQTT(LOG_INFO, "Homing: pan -> %d us | tilt -> %d us", (int)track.panAngle, (int)track.tiltAngle);
   }
   else if (verb == "STATUS")
   {
     int panDeg = usToDeg((int)track.panAngle, PAN_MIN, PAN_MAX);
     int tiltDeg = tiltUsToDeg((int)track.tiltAngle);
-    char buf[128];
-    snprintf(buf, sizeof(buf), "Manual:%s | pan=%d us (%d deg) | tilt=%d us (%d deg) | step=%d",
-             manualMode ? "ON" : "OFF", (int)track.panAngle, panDeg, (int)track.tiltAngle, tiltDeg, track.stepSize);
-    logInfo(buf);
+    logMQTT(LOG_INFO, "Manual:%s | pan=%d us (%d deg) | tilt=%d us (%d deg) | step=%d",
+            manualMode ? "ON" : "OFF", (int)track.panAngle, panDeg, (int)track.tiltAngle, tiltDeg, track.stepSize);
   }
   else if (verb == "SENSOR")
   {
-    char buf[128];
-    snprintf(buf, sizeof(buf), "L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f\n", sensor.L1, sensor.L2, sensor.L3, sensor.L4, sensor.sumLDR);
-    logInfo(buf);
+    logMQTT(LOG_INFO, "L1=%.0f | L2=%.0f | L3=%.0f | L4=%.0f | Sum=%.0f\n",
+            sensor.L1, sensor.L2, sensor.L3, sensor.L4, sensor.sumLDR);
   }
   else if (verb == "DEEPSLEEP")
   {
     if (arg.length() == 0)
     {
-      String msg = "Provide time in hour, e.g. DEEPSLEEP 3";
-      logInfo(msg);
+      logMQTT(LOG_INFO, "Provide time in hour, e.g. DEEPSLEEP 3");
     }
     else
     {
       int d = arg.toInt();
-      String msg = "Memulai esp32 deepsleep selama " + String(d) + " jam...";
-      logInfo(msg);
+      logMQTT(LOG_INFO, "Memulai esp32 deepsleep selama %d jam...", d);
 
       vTaskDelay(pdMS_TO_TICKS(3000));
       // uint64_t sleep_seconds = 15; // 24 hours
@@ -229,18 +200,28 @@ void executeCommand(String cmd)
   }
   else if (verb == "REBOOT")
   {
-    logInfo("Mulai reboot esp32 dalam 3 detik...");
+    logMQTT(LOG_INFO, "Mulai reboot esp32 dalam 3 detik...");
 
     vTaskDelay(pdMS_TO_TICKS(3000));
     ESP.restart();
   }
   else if (verb == "OTA")
   {
-    logWarning("Mulai masuk mode OTA dalam 3 detik...");
-    logWarning("Connect your PC to the ESP32 Wi-Fi.");
-
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    otaTriggerMqtt = true;
+    arg.trim();
+    if (arg == "STA")
+    {
+      logMQTT(LOG_WARN, "OTA mode: STA.");
+      otaTrigger = OTA_STA;
+    }
+    else if (arg == "AP")
+    {
+      otaTrigger = OTA_AP;
+      logMQTT(LOG_WARN, "OTA mode: AP.");
+    }
+    else
+    {
+      logMQTT(LOG_ERROR, "Usage: OTA STA|AP");
+    }
   }
   // ========================================
   // WIFI AP: wifi ap NamaAP password
@@ -335,7 +316,7 @@ void executeCommand(String cmd)
   }
   else
   {
-    logWarning("Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS, SENSOR");
+    logMQTT(LOG_INFO, "Unknown command. Use MANUAL, PAN, TILT, PAN_DELTA, TILT_DELTA, PAN_US, TILT_US, STEP, HOME, STATUS, SENSOR");
   }
 }
 void ReadString(void *pvParameters)
@@ -409,11 +390,11 @@ void TaskMqtt(void *pvParameters)
   for (;;)
   {
 
-    if (WiFi.status() != WL_CONNECTED)
+    if ((WiFi.status() != WL_CONNECTED) || otaActive)
     {
       WiFi.reconnect();
       vTaskDelay(pdMS_TO_TICKS(3000));
-      // continue;
+      continue;
     }
 
     // Process MQTT and its WebSocket transport
@@ -613,24 +594,40 @@ void TaskOta(void *parameter)
   for (;;)
   {
     // 1. Check if button was pressed and OTA isn't running yet
-    if ((otaTrigger || otaTriggerMqtt) && !otaActive)
+    // if ((otaTrigger || otaTriggerMqtt) && !otaActive)
+    if ((otaTrigger != OTA_OFF))
     {
-      otaTrigger = false;
-      otaTriggerMqtt = false;
-      otaActive = true;
-
-      logWarning("Command Accepted! Starting AP mode and OTA...");
-      vTaskDelay(pdMS_TO_TICKS(1000));
+      vTaskDelay(pdMS_TO_TICKS(500));
       // Switch to Access Point mode
-      WiFi.disconnect(true);
-      WiFi.mode(WIFI_AP);
-      WiFi.softAP(ap_ssid, ap_pass);
+      if (otaTrigger == OTA_AP)
+      {
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP(ap_ssid, ap_pass);
 
-      Serial.print("AP IP Address: ");
-      Serial.println(WiFi.softAPIP()); // Usually 192.168.4.1
+        Serial.print("AP IP Address: ");
+        Serial.println(WiFi.softAPIP()); // Usually 192.168.4.1
+      }
+      else if (WiFi.getMode() == WIFI_AP)
+      {
+        // 1. Matikan mode Access Point (jika tidak ingin mode ganda AP+STA)
+        WiFi.softAPdisconnect(true);
+        vTaskDelay(pdMS_TO_TICKS(100)); // Beri jeda singkat agar radio Wi-Fi stabil
+        WiFi.mode(WIFI_OFF);
+        vTaskDelay(pdMS_TO_TICKS(100)); // Beri jeda singkat agar radio Wi-Fi stabil
+        
+        // 2. Ubah mode kembali menjadi Station (Client)
+        WiFi.mode(WIFI_STA);
+        vTaskDelay(pdMS_TO_TICKS(100)); // Beri jeda singkat agar radio Wi-Fi stabil
+        WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+        // 3. Hubungkan ulang ke router/portal dengan SSID dan password
 
+        Serial.println("WiFi kembali ke STA");
+        Serial.printf("[WIFI] Connect to %s", wifiSSID.c_str());
+        Serial.println("");
+      }
       // Configure and start ArduinoOTA
-      ArduinoOTA.setHostname("esp32");
+      ArduinoOTA.setHostname("solar-esp32");
       // ArduinoOTA.setPassword("admin");
 
       ArduinoOTA.onStart([]()
@@ -638,12 +635,15 @@ void TaskOta(void *parameter)
       ArduinoOTA.onEnd([]()
                        { Serial.println("\nOTA Complete! Rebooting..."); });
       ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
-                            { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); });
+                            { Serial.printf("Progress: %u%%\n", (progress / (total / 100))); });
       ArduinoOTA.onError([](ota_error_t error)
                          { Serial.printf("Error[%u]\n", error); });
 
       ArduinoOTA.begin();
-      Serial.println("OTA Ready. Connect your PC to the ESP32 Wi-Fi.");
+      Serial.println("OTA Ready. Connect your PC to the ESP32 Wi-Fi IP.");
+
+      otaTrigger = OTA_OFF;
+      otaActive = true;
     }
 
     // 2. Continuously handle OTA requests once active
@@ -707,7 +707,7 @@ void setup()
   xTaskCreatePinnedToCore(taskSensor, "Task Sensor", 4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(TaskTracking, "Task Tracking", 8000, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(TaskMqtt, "mqtt", 8096, NULL, 2, NULL, 1);
-  xTaskCreatePinnedToCore(TaskOta, "ota", 8192, NULL, 3, NULL, 1);
+  xTaskCreatePinnedToCore(TaskOta, "ota", 10000, NULL, 3, NULL, 1);
 
   // Core 0: Fokus ke Input Serial, Sistem, dan Sensor Lambat
   // Berbagi beban dengan internal WiFi stack

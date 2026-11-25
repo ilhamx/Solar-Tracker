@@ -15,18 +15,22 @@ String wifiPassword;
 
 bool wifiEnabled = true;
 
-#define BUTTON_PIN 0  // GPIO 0 is the built-in BOOT button on most ESP32 boards
+#define BUTTON_PIN 12  // GPIO 0 is the built-in BOOT button on most ESP32 boards
 
 const char* ap_ssid = "ESP32-OTA-AP";
 const char* ap_pass = "12345678"; // Minimum 8 characters
 
-volatile bool otaTrigger = false;
-volatile bool otaTriggerMqtt = false;
+volatile uint8_t otaTrigger = false;
 bool otaActive = false;
 
+enum OTA_MODE{
+    OTA_OFF,
+    OTA_AP,
+    OTA_STA,
+};
 // Interrupt Service Routine (ISR) for the button
 void IRAM_ATTR handleButtonInterrupt() {
-  otaTrigger = true;
+  otaTrigger = 1;
 }
 // #include <WiFi.h>
 // #include <ESPmDNS.h>

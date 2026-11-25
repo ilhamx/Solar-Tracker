@@ -44,36 +44,83 @@ bool wasConnected = false;
 // ========================================
 // MQTT LOGGING
 // ========================================
-void logMQTT(const String &message)
-{
-    // Serial Monitor lokal
-    Serial.println(message);
-    Serial.printf();
+#include <cstdarg>
+#include <cstdio>
+#include <new>
 
-    // MQTT Monitor
-    if (mqtt.isConnected())
-    {
-        mqtt.publish("solar/tracker/log", message);
+// Definisi konstanta Log Level (sesuaikan jika sudah ada di kode Anda)
+enum LogLevel : uint8_t {
+    LOG_DEBUG = 0,
+    LOG_INFO  = 1,
+    LOG_WARN  = 2,
+    LOG_ERROR = 3
+};
+
+// Opsional: Filter batas minimum log yang ingin ditampilkan
+uint8_t currentLogLevel = LOG_DEBUG; 
+
+size_t logMQTT(uint8_t logLevel, const char *format, ...) {
+    // Abaikan jika logLevel di bawah batas minimum yang ditentukan
+    if (logLevel < currentLogLevel) {
+        return 0;
     }
+
+    // Tentukan prefix berdasarkan logLevel
+    const char* prefix = "";
+    switch (logLevel) {
+        case LOG_DEBUG: prefix = "[DEBUG] "; break;
+        case LOG_INFO:  prefix = "[INFO] ";  break;
+        case LOG_WARN:  prefix = "[WARN] ";  break;
+        case LOG_ERROR: prefix = "[ERROR] "; break;
+        default:        prefix = "[LOG] ";   break;
+    }
+    size_t prefixLen = strlen(prefix);
+
+    va_list arg;
+    va_start(arg, format);
+    char temp[64];
+    char* buffer = temp;
+
+    // Hitung panjang string pesan utama
+    int msgLen = vsnprintf(NULL, 0, format, arg);
+    va_end(arg);
+
+    if (msgLen < 0) {
+        return 0;
+    }
+
+    size_t totalLen = prefixLen + (size_t)msgLen;
+
+    // Alokasi memori dinamis jika gabungan prefix + pesan melebihi 63 karakter
+    if (totalLen > sizeof(temp) - 1) {
+        buffer = new (std::nothrow) char[totalLen + 1];
+        if (!buffer) {
+            return 0; // Kehabisan RAM
+        }
+    }
+
+    // Salin prefix ke awal buffer, lalu format pesan tepat setelah prefix
+    memcpy(buffer, prefix, prefixLen);
+    va_start(arg, format);
+    vsnprintf(buffer + prefixLen, msgLen + 1, format, arg);
+    va_end(arg);
+
+    // 1. Kirim ke Serial Monitor lokal
+    Serial.println(buffer);
+
+    // 2. Kirim ke MQTT Monitor
+    if (mqtt.isConnected()) {
+        mqtt.publish("solar/tracker/log", String(buffer));
+    }
+
+    // Bersihkan memori jika menggunakan alokasi dinamis
+    if (buffer != temp) {
+        delete[] buffer;
+    }
+
+    return totalLen;
 }
 
-// ========================================
-// LOG LEVEL
-// ========================================
-void logInfo(const String &message)
-{
-    logMQTT(String("[INFO] ") + message);
-}
-
-void logWarning(const String &message)
-{
-    logMQTT(String("[WARNING] ") + message);
-}
-
-void logError(const String &message)
-{
-    logMQTT(String("[ERROR] ") + message);
-}
 // ========================================
 // MQTT CALLBACK
 // ========================================
