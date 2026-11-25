@@ -208,15 +208,15 @@ void executeCommand(String cmd)
   }
   else if (verb == "REBOOT")
   {
-    logInfo("Mulai reboot esp32 dalam 5 detik...");
+    logInfo("Mulai reboot esp32 dalam 3 detik...");
 
     vTaskDelay(pdMS_TO_TICKS(3000));
     ESP.restart();
   }
   else if (verb == "OTA")
   {
-    logInfo("Mulai masuk mode OTA dalam 3 detik...");
-    logInfo("Connect your PC to the ESP32 Wi-Fi.");
+    logWarning("Mulai masuk mode OTA dalam 3 detik...");
+    logWarning("Connect your PC to the ESP32 Wi-Fi.");
 
     vTaskDelay(pdMS_TO_TICKS(3000));
     otaTriggerMqtt = true;
@@ -349,7 +349,7 @@ void TaskMqtt(void *pvParameters)
       payload += "\"tiltAngle\":" + String(track.tiltAngle, 1);
       payload += "}";
 
-      Serial.printf("data panAngle: %.2f\n", track.panAngle);
+      // Serial.printf("data panAngle: %.2f\n", track.panAngle);
       // Serial.printf("data mutex panAngle: %.2f\n", mqttTracker.panAngle);
 
       bool result = mqtt.publish(
@@ -586,7 +586,6 @@ void setup()
   Serial.println("Mutex berhasil dibuat!");
 
   /*********** MQTT ***********/
-  Serial.println("Mencoba menyambung ke WiFi...");
   WiFi.setAutoReconnect(true);
   connectWiFi();
   setupMQTT();

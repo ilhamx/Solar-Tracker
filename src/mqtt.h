@@ -167,9 +167,6 @@ void connectMQTT()
 // ========================================
 void setupMQTT()
 {
-
-    Serial.begin(115200);
-
     // WebSocket event
     ws.onEvent(onWebSocketEvent);
 
