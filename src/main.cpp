@@ -392,8 +392,8 @@ void TaskMqtt(void *pvParameters)
 
     if ((WiFi.status() != WL_CONNECTED) || otaActive)
     {
-      WiFi.reconnect();
-      vTaskDelay(pdMS_TO_TICKS(3000));
+      // WiFi.reconnect();
+      vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
     }
 
@@ -464,6 +464,12 @@ void taskSensor(void *pvParameters)
   vTaskDelay(pdMS_TO_TICKS(2000));
   for (;;)
   {
+    if (otaActive)
+    {
+      // WiFi.reconnect();
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      continue;
+    }
     sensor.readLDR();
     if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
     {
@@ -478,6 +484,12 @@ void taskOled(void *pvParameters)
   vTaskDelay(pdMS_TO_TICKS(2000));
   for (;;)
   {
+    if (otaActive)
+    {
+      // WiFi.reconnect();
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      continue;
+    }
     if (xSemaphoreTake(i2cMutex, portMAX_DELAY))
     {
       oled.drawSolar();
@@ -493,7 +505,7 @@ void TaskTracking(void *pvParameters)
   for (;;)
   {
     // if (manualMode || sensor.sumLDR < 50) // night protection
-    if (manualMode) // night protection
+    if (manualMode || otaActive) // night protection
     {
       vTaskDelay(pdMS_TO_TICKS(500));
       continue;
@@ -602,7 +614,9 @@ void TaskOta(void *parameter)
       if (otaTrigger == OTA_AP)
       {
         WiFi.disconnect(true);
+        vTaskDelay(pdMS_TO_TICKS(100)); // Beri jeda singkat agar radio Wi-Fi stabil
         WiFi.mode(WIFI_AP);
+        vTaskDelay(pdMS_TO_TICKS(100)); // Beri jeda singkat agar radio Wi-Fi stabil
         WiFi.softAP(ap_ssid, ap_pass);
 
         Serial.print("AP IP Address: ");
@@ -707,7 +721,7 @@ void setup()
   xTaskCreatePinnedToCore(taskSensor, "Task Sensor", 4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(TaskTracking, "Task Tracking", 8000, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(TaskMqtt, "mqtt", 8096, NULL, 2, NULL, 1);
-  xTaskCreatePinnedToCore(TaskOta, "ota", 10000, NULL, 3, NULL, 1);
+  xTaskCreatePinnedToCore(TaskOta, "ota", 10000, NULL, 4, NULL, 1);
 
   // Core 0: Fokus ke Input Serial, Sistem, dan Sensor Lambat
   // Berbagi beban dengan internal WiFi stack
